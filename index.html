@@ -99,6 +99,7 @@
   .msel { position: relative; }
   .msel-btn { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); padding: 8px 14px; border-radius: 7px; font-size: 13.5px; cursor: pointer; min-width: 150px; text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .msel-btn::after { content: "▾"; color: var(--muted); font-size: 11px; }
+  .aging-input { width: 76px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 7px; padding: 8px 10px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
   .msel-btn:hover { border-color: var(--accent); }
   .msel-panel { position: absolute; top: calc(100% + 6px); left: 0; min-width: 240px; max-height: 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 9px; box-shadow: var(--shadow); padding: 6px; z-index: 30; }
   .msel-search { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 13px; margin-bottom: 6px; background: var(--surface-2); color: var(--ink); }
@@ -214,8 +215,13 @@
             <button type="button" class="msel-btn" id="remMselBtn">All remarks</button>
             <div class="msel-panel" id="remMselPanel" hidden></div>
           </div>
+          <span class="filters-label">Aging (days)</span>
+          <input type="number" min="0" class="aging-input" id="agingMinInput" placeholder="Min">
+          <span class="filters-label" style="margin:0;">to</span>
+          <input type="number" min="0" class="aging-input" id="agingMaxInput" placeholder="Max">
           <button class="btn ghost" id="clearFiltersBtn">Clear filters</button>
         </div>
+        <div class="panel-sub" style="margin:6px 0 0;">Aging is days since purchase — from Sales' Purchase Date Avg for sold stones, or Inventory's StockAging for everything else.</div>
         <div class="summary-line" id="summaryLine">Connect a folder to see your stock.</div>
 
         <div class="kpi-row" id="kpiRow"></div>
@@ -302,11 +308,13 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   };
 
   var STATE = {
-    inventoryRows: [], salesRows: [], inwardRows: [], inwardHeader: [],
+    inventoryRows: [], salesRows: [], inwardRows: [],
+    inwardHeader: [], inventoryHeader: [], salesHeader: [],
     inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}
   };
   var selBatches = new Set();   // empty = "all"
   var selMasters = new Set();   // empty = "all"
+  var agingMin = null, agingMax = null; // null = unbounded
 
   var rootHandle = null, invDirHandle = null, inwDirHandle = null, salesDirHandle = null;
   var knownFiles = {};
@@ -355,27 +363,31 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     var sheetName = wb.SheetNames[0]; var rows = sheetToRows(wb, sheetName);
     var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
     var idx = function(n){ return header.indexOf(n); };
-    var col = { StoneID: idx('StoneID'), StoneStatus: idx('StoneStatus') };
+    var col = { StoneID: idx('StoneID'), StoneStatus: idx('StoneStatus'), StockAging: idx('StockAging') };
+    if (col.StoneID === -1) throw new Error('No "StoneID" column found');
     var out = [];
     for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
       var sid = r[col.StoneID]; if (sid===null||sid===undefined||sid==='') continue;
       var status = r[col.StoneStatus]; status = (typeof status==='string' && status.trim()) ? status.trim() : 'UNKNOWN';
       status = status.replace(/ /g,'_');
       if (!STATUS_META[status]) status = 'UNKNOWN';
-      out.push({ stoneId: String(sid), status: status }); }
-    return out;
+      var aging = r[col.StockAging]; aging = (typeof aging === 'number') ? aging : null;
+      out.push({ stoneId: String(sid), status: status, stockAging: aging, raw: r }); }
+    return { header: header, rows: out };
   }
 
   function parseSales(wb){
     var sheetName = wb.SheetNames[0]; var rows = sheetToRows(wb, sheetName);
     var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
     var idx = function(n){ return header.indexOf(n); };
-    var col = { StoneID: idx('Stone ID') };
+    var col = { StoneID: idx('Stone ID'), PurchaseDateAvg: idx('Purchase Date Avg') };
+    if (col.StoneID === -1) throw new Error('No "Stone ID" column found');
     var out = [];
     for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
       var sid = r[col.StoneID]; if (sid===null||sid===undefined||sid==='') continue;
-      out.push({ stoneId: String(sid) }); }
-    return out;
+      var pd = r[col.PurchaseDateAvg]; pd = (pd instanceof Date) ? pd : null;
+      out.push({ stoneId: String(sid), purchaseDateAvg: pd, raw: r }); }
+    return { header: header, rows: out };
   }
 
   function parseInwardFile(wb){
@@ -392,11 +404,15 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     return { header: header, rows: out };
   }
 
-  function projectRow(row){
-    return STATE.inwardHeader.map(function(colName){
+  function projectRow(canonicalHeader, row){
+    return canonicalHeader.map(function(colName){
       var i = row._header.indexOf(colName);
       return i === -1 ? null : row._raw[i];
     });
+  }
+
+  function unionHeader(target, header){
+    header.forEach(function(col){ if (col !== null && col !== undefined && col !== '' && target.indexOf(col) === -1) target.push(col); });
   }
 
   // ---------------- folder connect / permission ----------------
@@ -536,28 +552,34 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   async function reloadAllData(invFiles, salesFiles, inwFiles){
     var warnings = [];
     var inventoryRows = [];
+    var invHeaderUnion = [];
     for (var i=0;i<invFiles.length;i++){
       try { var buf = await (await invFiles[i].handle.getFile()).arrayBuffer();
         var wb = XLSX.read(buf, {type:'array', cellDates:true});
-        inventoryRows = inventoryRows.concat(parseInventory(wb));
+        var parsedInv = parseInventory(wb);
+        unionHeader(invHeaderUnion, parsedInv.header);
+        parsedInv.rows.forEach(function(r){ r._header = parsedInv.header; r._raw = r.raw; inventoryRows.push(r); });
       } catch(e) { warnings.push(invFiles[i].name + ': ' + e.message); }
     }
     var salesRows = [];
+    var salesHeaderUnion = [];
     for (i=0;i<salesFiles.length;i++){
       try { buf = await (await salesFiles[i].handle.getFile()).arrayBuffer();
         wb = XLSX.read(buf, {type:'array', cellDates:true});
-        salesRows = salesRows.concat(parseSales(wb));
+        var parsedSales = parseSales(wb);
+        unionHeader(salesHeaderUnion, parsedSales.header);
+        parsedSales.rows.forEach(function(r){ r._header = parsedSales.header; r._raw = r.raw; salesRows.push(r); });
       } catch(e) { warnings.push(salesFiles[i].name + ': ' + e.message); }
     }
     var inwardRows = [];
-    var headerUnion = [];
+    var inwardHeaderUnion = [];
     for (i=0;i<inwFiles.length;i++){
       try {
         var label = inwFiles[i].name.replace(/\.xlsx$/i,'');
         buf = await (await inwFiles[i].handle.getFile()).arrayBuffer();
         wb = XLSX.read(buf, {type:'array', cellDates:true});
         var parsed = parseInwardFile(wb);
-        parsed.header.forEach(function(col){ if (col !== null && col !== undefined && col !== '' && headerUnion.indexOf(col) === -1) headerUnion.push(col); });
+        unionHeader(inwardHeaderUnion, parsed.header);
         parsed.rows.forEach(function(r){
           inwardRows.push({ stoneId: r.stoneId, batch: label, cts: r.cts, cost: r.cost, remark: r.remark, _header: parsed.header, _raw: r.raw });
         });
@@ -565,7 +587,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
 
     STATE.inventoryRows = inventoryRows; STATE.salesRows = salesRows; STATE.inwardRows = inwardRows;
-    if (headerUnion.length) STATE.inwardHeader = headerUnion;
+    if (inwardHeaderUnion.length) STATE.inwardHeader = inwardHeaderUnion;
+    if (invHeaderUnion.length) STATE.inventoryHeader = invHeaderUnion;
+    if (salesHeaderUnion.length) STATE.salesHeader = salesHeaderUnion;
     STATE.inventoryMap = new Map(inventoryRows.map(function(r){ return [r.stoneId, r]; }));
     STATE.salesMap = new Map(salesRows.map(function(r){ return [r.stoneId, r]; }));
     ensureRemarkMap();
@@ -577,6 +601,20 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     var inv = STATE.inventoryMap.get(stoneId);
     if (inv) return inv.status;
     return 'UNKNOWN';
+  }
+
+  // Aging = days since purchase. Sold stones no longer carry StockAging in Inventory,
+  // so derive it from Sales' Purchase Date Avg instead; unsold stones use Inventory's own figure as-is.
+  var MS_PER_DAY = 24 * 60 * 60 * 1000;
+  function agingDaysOf(stoneId){
+    var sale = STATE.salesMap.get(stoneId);
+    if (sale) {
+      if (!sale.purchaseDateAvg) return null;
+      return Math.max(0, Math.round((Date.now() - sale.purchaseDateAvg.getTime()) / MS_PER_DAY));
+    }
+    var inv = STATE.inventoryMap.get(stoneId);
+    if (inv && typeof inv.stockAging === 'number') return inv.stockAging;
+    return null;
   }
 
   // ---------------- remark master mapping ----------------
@@ -681,7 +719,15 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   // ---------------- dashboard ----------------
   function currentFilteredRows(){
     return STATE.inwardRows.filter(function(r){
-      return (selBatches.size === 0 || selBatches.has(r.batch)) && (selMasters.size === 0 || selMasters.has(masterOf(r.remark)));
+      if (selBatches.size !== 0 && !selBatches.has(r.batch)) return false;
+      if (selMasters.size !== 0 && !selMasters.has(masterOf(r.remark))) return false;
+      if (agingMin !== null || agingMax !== null) {
+        var a = agingDaysOf(r.stoneId);
+        if (a === null) return false;
+        if (agingMin !== null && a < agingMin) return false;
+        if (agingMax !== null && a > agingMax) return false;
+      }
+      return true;
     });
   }
 
@@ -722,17 +768,23 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   function renderDashboard(){
     var rows = currentFilteredRows();
     var byStatus = {}; STATUS_ORDER.forEach(function(k){ byStatus[k] = { pcs:0, cost:0 }; });
-    var totalCts = 0, totalCost = 0;
+    var totalCts = 0, totalCost = 0, agingSum = 0, agingCount = 0;
     rows.forEach(function(r){
       totalCts += r.cts; totalCost += r.cost;
       var st = statusOf(r.stoneId);
       byStatus[st].pcs++; byStatus[st].cost += r.cost;
+      var a = agingDaysOf(r.stoneId);
+      if (a !== null) { agingSum += a; agingCount++; }
     });
 
     var summary = document.getElementById('summaryLine');
     if (!STATE.inwardRows.length) summary.textContent = 'No inward stones found yet.';
     else if (!rows.length) summary.textContent = 'No stones match these filters.';
-    else summary.innerHTML = '<b>' + fmtNum(rows.length) + '</b> stones selected &middot; ' + totalCts.toFixed(1) + ' cts &middot; <b>' + fmtUSDFull(totalCost) + '</b> cost value';
+    else {
+      var avgAging = agingCount ? Math.round(agingSum / agingCount) : null;
+      summary.innerHTML = '<b>' + fmtNum(rows.length) + '</b> stones selected &middot; ' + totalCts.toFixed(1) + ' cts &middot; <b>' + fmtUSDFull(totalCost) + '</b> cost value' +
+        (avgAging !== null ? ' &middot; avg aging <b>' + fmtNum(avgAging) + ' days</b>' : '');
+    }
 
     buildKpiRow(document.getElementById('kpiRow'), byStatus);
     buildDistBar(document.getElementById('distBar'), document.getElementById('distLegend'), byStatus);
@@ -757,11 +809,28 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       var rows = currentFilteredRows();
       var subset = rows.filter(function(r){ var sold = statusOf(r.stoneId) === 'SOLD'; return kind === 'sold' ? sold : !sold; });
       if (!subset.length) { alert('No ' + (kind === 'sold' ? 'sold' : 'remaining') + ' stones in the current selection.'); return; }
-      var aoa = [STATE.inwardHeader].concat(subset.map(projectRow));
+
+      var header, sourceMap, skipped = 0;
+      if (kind === 'sold') { header = STATE.salesHeader; sourceMap = STATE.salesMap; }
+      else { header = STATE.inventoryHeader; sourceMap = STATE.inventoryMap; }
+
+      if (!header.length) { alert((kind === 'sold' ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
+
+      var dataRows = [];
+      subset.forEach(function(r){
+        var master = sourceMap.get(r.stoneId);
+        if (!master) { skipped++; return; }
+        dataRows.push(projectRow(header, master));
+      });
+      if (!dataRows.length) { alert('None of the matching stones were found in ' + (kind === 'sold' ? 'SALES' : 'INVENTORY') + ' — nothing to export.'); return; }
+
+      var aoa = [header].concat(dataRows);
       var wb = XLSX.utils.book_new();
       var sheetName = kind === 'sold' ? 'Sold' : 'Remaining';
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
       XLSX.writeFile(wb, (kind === 'sold' ? 'sold-stones-' : 'remaining-stones-') + todayStamp() + '.xlsx');
+
+      if (skipped) alert('Exported ' + dataRows.length + ' stones. ' + skipped + ' stone' + (skipped===1?'':'s') + ' could not be matched in ' + (kind === 'sold' ? 'SALES' : 'INVENTORY') + ' and ' + (skipped===1?'was':'were') + ' skipped.');
     } catch(e) { alert('Export failed: ' + e.message); console.error(e); }
   }
 
@@ -863,7 +932,20 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     shipMselCtl = buildMultiSelect('shipMselBtn', 'shipMselPanel', 'shipments', function(){ return shipMselOptionsCache; }, selBatches, renderDashboard, true);
     remMselCtl = buildMultiSelect('remMselBtn', 'remMselPanel', 'remarks', function(){ return remMselOptionsCache; }, selMasters, renderDashboard, true);
 
-    document.getElementById('clearFiltersBtn').addEventListener('click', function(){ selBatches.clear(); selMasters.clear(); shipMselCtl.refresh(); remMselCtl.refresh(); renderDashboard(); });
+    var agingMinInput = document.getElementById('agingMinInput'), agingMaxInput = document.getElementById('agingMaxInput');
+    function readAgingInputs(){
+      agingMin = agingMinInput.value === '' ? null : Math.max(0, parseInt(agingMinInput.value, 10) || 0);
+      agingMax = agingMaxInput.value === '' ? null : Math.max(0, parseInt(agingMaxInput.value, 10) || 0);
+      renderDashboard();
+    }
+    agingMinInput.addEventListener('input', readAgingInputs);
+    agingMaxInput.addEventListener('input', readAgingInputs);
+
+    document.getElementById('clearFiltersBtn').addEventListener('click', function(){
+      selBatches.clear(); selMasters.clear(); shipMselCtl.refresh(); remMselCtl.refresh();
+      agingMin = null; agingMax = null; agingMinInput.value = ''; agingMaxInput.value = '';
+      renderDashboard();
+    });
 
     document.getElementById('exportSoldBtn').addEventListener('click', function(){ doExport('sold'); });
     document.getElementById('exportRemainingBtn').addEventListener('click', function(){ doExport('remaining'); });
