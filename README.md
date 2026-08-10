@@ -2,7 +2,7 @@
 
 A single-page dashboard for tracking diamond/gemstone stock across **Inventory**, **Sales**, and **Inward** shipment records.
 
-**Live app:** _(fill in after enabling GitHub Pages — see below)_
+**Live app:** https://justjd7.github.io/stock-ledger-app/
 
 ## What it does
 
