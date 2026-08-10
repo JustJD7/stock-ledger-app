@@ -529,7 +529,10 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
       STATE.inventoryMap = new Map(STATE.inventoryRows.map(function(r){ return [r.stoneId, r]; }));
       STATE.salesMap = new Map(STATE.salesRows.map(function(r){ return [r.stoneId, r]; }));
-      if (!Object.keys(STATE.remarkMap).length && snap.remarkMap) STATE.remarkMap = snap.remarkMap;
+      // Shared viewers always take the just-published mapping (not just when their own
+      // browser has none yet) so a refresh always reflects the latest published groupings,
+      // not whatever was cached from an earlier visit.
+      if (snap.remarkMap) { STATE.remarkMap = snap.remarkMap; saveRemarkMap(); }
       ensureRemarkMap();
 
       isSharedMode = true;
