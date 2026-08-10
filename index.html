@@ -181,8 +181,17 @@
     <div class="syncbar-actions">
       <button class="btn primary" id="connectBtn">Connect data folder</button>
       <button class="btn ghost" id="syncNowBtn" hidden>Sync now</button>
+      <button class="btn ghost" id="publishBtn" hidden title="Publish your live data so anyone with the link can see it">Publish live data</button>
       <button class="btn ghost" id="disconnectBtn" hidden>Disconnect</button>
     </div>
+  </div>
+
+  <div class="warn-banner" id="sharedBanner" hidden style="background:var(--accent-soft);border-color:var(--accent);color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span id="sharedBannerText">Showing shared data.</span>
+    <span style="display:flex;gap:8px;">
+      <button class="btn ghost" id="sharedBannerRefreshBtn" style="border-color:var(--accent);">Refresh</button>
+      <button class="btn ghost" id="sharedBannerConnectBtn" style="border-color:var(--accent);">Connect your own folder instead</button>
+    </span>
   </div>
 
   <div class="warn-banner" id="syncWarnBanner" hidden></div>
@@ -321,6 +330,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   var syncing = false;
   var pollTimer = null;
   var tipEl;
+  var isSharedMode = false; // true = viewing someone else's published data.json, not our own live folder
 
   // ---------------- formatting ----------------
   function fmtUSDFull(n){ return (n<0?'-':'') + '$' + Math.abs(Math.round(n)).toLocaleString('en-US'); }
@@ -359,48 +369,65 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     return best;
   }
 
+  // Derive-from-row helpers work on a (header, rawRowArray) pair regardless of where that
+  // pair came from — a freshly-read xlsx file, or a raw row pulled back out of a published
+  // JSON snapshot. This is what lets the "shared" viewer reuse every bit of dashboard/export
+  // logic that the live local-folder mode uses.
+  function deriveInventoryFields(header, r){
+    var idx = function(n){ return header.indexOf(n); };
+    var sid = r[idx('StoneID')];
+    if (sid===null||sid===undefined||sid==='') return null;
+    var status = r[idx('StoneStatus')]; status = (typeof status==='string' && status.trim()) ? status.trim() : 'UNKNOWN';
+    status = status.replace(/ /g,'_');
+    if (!STATUS_META[status]) status = 'UNKNOWN';
+    var aging = r[idx('StockAging')]; aging = (typeof aging === 'number') ? aging : null;
+    return { stoneId: String(sid), status: status, stockAging: aging };
+  }
+  function deriveSalesFields(header, r){
+    var idx = function(n){ return header.indexOf(n); };
+    var sid = r[idx('Stone ID')];
+    if (sid===null||sid===undefined||sid==='') return null;
+    var pd = r[idx('Purchase Date Avg')]; pd = (pd instanceof Date) ? pd : null;
+    return { stoneId: String(sid), purchaseDateAvg: pd };
+  }
+  function deriveInwardFields(header, r){
+    var idx = function(n){ return header.indexOf(n); };
+    var sid = r[idx('Stone ID')];
+    if (sid===null||sid===undefined||sid==='') return null;
+    var remark = r[idx('Remarks')]; remark = (typeof remark==='string' && remark.trim()) ? remark.trim() : '(blank)';
+    return { stoneId: String(sid), cts: num(r[idx('Crts.')]), cost: num(r[idx('Amount ($)')]), remark: remark };
+  }
+
   function parseInventory(wb){
     var sheetName = wb.SheetNames[0]; var rows = sheetToRows(wb, sheetName);
     var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
-    var idx = function(n){ return header.indexOf(n); };
-    var col = { StoneID: idx('StoneID'), StoneStatus: idx('StoneStatus'), StockAging: idx('StockAging') };
-    if (col.StoneID === -1) throw new Error('No "StoneID" column found');
+    if (header.indexOf('StoneID') === -1) throw new Error('No "StoneID" column found');
     var out = [];
     for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
-      var sid = r[col.StoneID]; if (sid===null||sid===undefined||sid==='') continue;
-      var status = r[col.StoneStatus]; status = (typeof status==='string' && status.trim()) ? status.trim() : 'UNKNOWN';
-      status = status.replace(/ /g,'_');
-      if (!STATUS_META[status]) status = 'UNKNOWN';
-      var aging = r[col.StockAging]; aging = (typeof aging === 'number') ? aging : null;
-      out.push({ stoneId: String(sid), status: status, stockAging: aging, raw: r }); }
+      var f = deriveInventoryFields(header, r); if (!f) continue;
+      f.raw = r; out.push(f); }
     return { header: header, rows: out };
   }
 
   function parseSales(wb){
     var sheetName = wb.SheetNames[0]; var rows = sheetToRows(wb, sheetName);
     var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
-    var idx = function(n){ return header.indexOf(n); };
-    var col = { StoneID: idx('Stone ID'), PurchaseDateAvg: idx('Purchase Date Avg') };
-    if (col.StoneID === -1) throw new Error('No "Stone ID" column found');
+    if (header.indexOf('Stone ID') === -1) throw new Error('No "Stone ID" column found');
     var out = [];
     for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
-      var sid = r[col.StoneID]; if (sid===null||sid===undefined||sid==='') continue;
-      var pd = r[col.PurchaseDateAvg]; pd = (pd instanceof Date) ? pd : null;
-      out.push({ stoneId: String(sid), purchaseDateAvg: pd, raw: r }); }
+      var f = deriveSalesFields(header, r); if (!f) continue;
+      f.raw = r; out.push(f); }
     return { header: header, rows: out };
   }
 
   function parseInwardFile(wb){
     var sheetName = wb.SheetNames[0]; var rows = sheetToRows(wb, sheetName);
     var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
-    var idx = function(n){ return header.indexOf(n); };
-    var col = { StoneID: idx('Stone ID'), Cts: idx('Crts.'), Amount: idx('Amount ($)'), Remarks: idx('Remarks') };
-    if (col.StoneID === -1) throw new Error('No "Stone ID" column found');
+    if (header.indexOf('Stone ID') === -1) throw new Error('No "Stone ID" column found');
     var out = [];
     for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
-      var sid = r[col.StoneID]; if (sid===null||sid===undefined||sid==='') continue;
-      var remark = r[col.Remarks]; remark = (typeof remark==='string' && remark.trim()) ? remark.trim() : '(blank)';
-      out.push({ stoneId: String(sid), cts: num(r[col.Cts]), cost: num(r[col.Amount]), remark: remark, raw: r }); }
+      var f = deriveInwardFields(header, r); if (!f) continue;
+      f.raw = r; out.push(f); }
     return { header: header, rows: out };
   }
 
@@ -414,6 +441,10 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   function unionHeader(target, header){
     header.forEach(function(col){ if (col !== null && col !== undefined && col !== '' && target.indexOf(col) === -1) target.push(col); });
   }
+
+  // ---------------- shared-snapshot serialization ----------------
+  function serializeValue(v){ return (v instanceof Date) ? { __date: v.toISOString() } : v; }
+  function deserializeValue(v){ return (v && typeof v === 'object' && '__date' in v) ? new Date(v.__date) : v; }
 
   // ---------------- folder connect / permission ----------------
   function setSyncText(t){ document.getElementById('syncText').textContent = t; }
@@ -454,9 +485,12 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       invDirHandle = await rootHandle.getDirectoryHandle('INVENTORY');
       inwDirHandle = await rootHandle.getDirectoryHandle('INWARD');
       salesDirHandle = await rootHandle.getDirectoryHandle('SALES');
+      isSharedMode = false;
+      document.getElementById('sharedBanner').hidden = true;
       showApp();
       document.getElementById('connectBtn').hidden = true;
       document.getElementById('syncNowBtn').hidden = false;
+      document.getElementById('publishBtn').hidden = false;
       document.getElementById('disconnectBtn').hidden = false;
       await pollTick();
       if (pollTimer) clearInterval(pollTimer);
@@ -466,22 +500,92 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
   }
 
+  // ---------------- shared (published) snapshot viewer ----------------
+  async function loadSharedSnapshot(showAlertIfMissing){
+    try {
+      var resp = await fetch('data.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!resp.ok) { if (showAlertIfMissing) alert('No published data found yet.'); return false; }
+      var snap = await resp.json();
+
+      STATE.inventoryHeader = snap.inventoryHeader || [];
+      STATE.salesHeader = snap.salesHeader || [];
+      STATE.inwardHeader = snap.inwardHeader || [];
+
+      STATE.inventoryRows = (snap.inventoryRows || []).map(function(raw){
+        raw = raw.map(deserializeValue);
+        var f = deriveInventoryFields(STATE.inventoryHeader, raw); if (!f) return null;
+        f._header = STATE.inventoryHeader; f._raw = raw; return f;
+      }).filter(Boolean);
+      STATE.salesRows = (snap.salesRows || []).map(function(raw){
+        raw = raw.map(deserializeValue);
+        var f = deriveSalesFields(STATE.salesHeader, raw); if (!f) return null;
+        f._header = STATE.salesHeader; f._raw = raw; return f;
+      }).filter(Boolean);
+      STATE.inwardRows = (snap.inwardRows || []).map(function(entry){
+        var raw = entry.raw.map(deserializeValue);
+        var f = deriveInwardFields(STATE.inwardHeader, raw); if (!f) return null;
+        f.batch = entry.batch; f._header = STATE.inwardHeader; f._raw = raw; return f;
+      }).filter(Boolean);
+
+      STATE.inventoryMap = new Map(STATE.inventoryRows.map(function(r){ return [r.stoneId, r]; }));
+      STATE.salesMap = new Map(STATE.salesRows.map(function(r){ return [r.stoneId, r]; }));
+      if (!Object.keys(STATE.remarkMap).length && snap.remarkMap) STATE.remarkMap = snap.remarkMap;
+      ensureRemarkMap();
+
+      isSharedMode = true;
+      showApp();
+      document.getElementById('connectBtn').hidden = false;
+      document.getElementById('syncNowBtn').hidden = true;
+      document.getElementById('publishBtn').hidden = true;
+      document.getElementById('disconnectBtn').hidden = true;
+      setSyncText('Viewing shared data'); setLiveDot('ok');
+      var when = snap.generatedAt ? new Date(snap.generatedAt).toLocaleString() : 'unknown time';
+      document.getElementById('sharedBanner').hidden = false;
+      document.getElementById('sharedBannerText').textContent = 'Showing shared data published ' + when + '.';
+
+      renderShipmentFilterOptions(); renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage();
+      return true;
+    } catch(e) { if (showAlertIfMissing) alert('Could not load shared data: ' + e.message); return false; }
+  }
+
+  function publishSnapshot(){
+    try {
+      if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
+      var snapshot = {
+        generatedAt: new Date().toISOString(),
+        inventoryHeader: STATE.inventoryHeader,
+        inventoryRows: STATE.inventoryRows.map(function(r){ return projectRow(STATE.inventoryHeader, r).map(serializeValue); }),
+        salesHeader: STATE.salesHeader,
+        salesRows: STATE.salesRows.map(function(r){ return projectRow(STATE.salesHeader, r).map(serializeValue); }),
+        inwardHeader: STATE.inwardHeader,
+        inwardRows: STATE.inwardRows.map(function(r){ return { batch: r.batch, raw: projectRow(STATE.inwardHeader, r).map(serializeValue) }; }),
+        remarkMap: STATE.remarkMap
+      };
+      downloadBlob(new Blob([JSON.stringify(snapshot)], {type:'application/json'}), 'data.json');
+      alert('data.json downloaded. Double-click publish.bat in your stock-ledger-app folder to push it live — that\'s the link everyone else sees.');
+    } catch(e) { alert('Publish failed: ' + e.message); console.error(e); }
+  }
+
   async function tryAutoReconnect(){
-    if (!window.showDirectoryPicker) { document.getElementById('unsupportedBox').hidden = false; return; }
+    if (!window.showDirectoryPicker) {
+      document.getElementById('unsupportedBox').hidden = false;
+      await loadSharedSnapshot(false);
+      return;
+    }
     var stored;
     try { stored = await idbGet('rootHandle'); } catch(e) { stored = null; }
-    if (!stored) { showConnectPanel(); return; }
+    if (!stored) { if (!(await loadSharedSnapshot(false))) showConnectPanel(); return; }
     rootHandle = stored;
     try {
       var perm = await rootHandle.queryPermission({ mode: 'read' });
       if (perm === 'granted') { await afterHaveRoot(); }
-      else {
+      else if (!(await loadSharedSnapshot(false))) {
         showConnectPanel();
         document.getElementById('connectPanel').querySelector('h2').textContent = 'Reconnect your STOCK DETAILS folder';
         document.getElementById('connectPanel').querySelector('p').innerHTML = 'Browser permission resets each session — click to re-grant access to the same folder you picked before.';
         document.getElementById('connectBtn2').textContent = 'Reconnect';
       }
-    } catch(e) { showConnectPanel(); }
+    } catch(e) { if (!(await loadSharedSnapshot(false))) showConnectPanel(); }
   }
 
   async function disconnect(){
@@ -491,11 +595,14 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     knownFiles = {};
     document.getElementById('connectBtn').hidden = false;
     document.getElementById('syncNowBtn').hidden = true;
+    document.getElementById('publishBtn').hidden = true;
     document.getElementById('disconnectBtn').hidden = true;
     setSyncText('Not connected'); setLiveDot(''); showWarnings([]);
-    showConnectPanel();
-    document.getElementById('connectPanel').querySelector('h2').textContent = 'Connect your STOCK DETAILS folder';
-    document.getElementById('connectBtn2').textContent = 'Choose folder…';
+    if (!(await loadSharedSnapshot(false))) {
+      showConnectPanel();
+      document.getElementById('connectPanel').querySelector('h2').textContent = 'Connect your STOCK DETAILS folder';
+      document.getElementById('connectBtn2').textContent = 'Choose folder…';
+    }
   }
 
   // ---------------- polling ----------------
@@ -925,7 +1032,10 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     document.getElementById('connectBtn').addEventListener('click', connectOrReconnect);
     document.getElementById('connectBtn2').addEventListener('click', connectOrReconnect);
     document.getElementById('syncNowBtn').addEventListener('click', pollTick);
+    document.getElementById('publishBtn').addEventListener('click', publishSnapshot);
     document.getElementById('disconnectBtn').addEventListener('click', disconnect);
+    document.getElementById('sharedBannerConnectBtn').addEventListener('click', connectOrReconnect);
+    document.getElementById('sharedBannerRefreshBtn').addEventListener('click', function(){ loadSharedSnapshot(true); });
 
     document.querySelectorAll('.page-nav button').forEach(function(b){ b.addEventListener('click', function(){ switchPage(b.getAttribute('data-page')); }); });
 
