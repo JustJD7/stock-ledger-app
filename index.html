@@ -319,7 +319,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   var STATE = {
     inventoryRows: [], salesRows: [], inwardRows: [],
     inwardHeader: [], inventoryHeader: [], salesHeader: [],
-    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}
+    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}, batchDates: {}
   };
   var selBatches = new Set();   // empty = "all"
   var selMasters = new Set();   // empty = "all"
@@ -526,6 +526,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         var f = deriveInwardFields(STATE.inwardHeader, raw); if (!f) return null;
         f.batch = entry.batch; f._header = STATE.inwardHeader; f._raw = raw; return f;
       }).filter(Boolean);
+      STATE.batchDates = snap.batchDates || {};
 
       STATE.inventoryMap = new Map(STATE.inventoryRows.map(function(r){ return [r.stoneId, r]; }));
       STATE.salesMap = new Map(STATE.salesRows.map(function(r){ return [r.stoneId, r]; }));
@@ -562,6 +563,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         salesRows: STATE.salesRows.map(function(r){ return projectRow(STATE.salesHeader, r).map(serializeValue); }),
         inwardHeader: STATE.inwardHeader,
         inwardRows: STATE.inwardRows.map(function(r){ return { batch: r.batch, raw: projectRow(STATE.inwardHeader, r).map(serializeValue) }; }),
+        batchDates: STATE.batchDates,
         remarkMap: STATE.remarkMap
       };
       downloadBlob(new Blob([JSON.stringify(snapshot)], {type:'application/json'}), 'data.json');
@@ -683,10 +685,13 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
     var inwardRows = [];
     var inwardHeaderUnion = [];
+    var batchDates = {};
     for (i=0;i<inwFiles.length;i++){
       try {
         var label = inwFiles[i].name.replace(/\.xlsx$/i,'');
-        buf = await (await inwFiles[i].handle.getFile()).arrayBuffer();
+        var file = await inwFiles[i].handle.getFile();
+        buf = await file.arrayBuffer();
+        batchDates[label] = file.lastModified;
         wb = XLSX.read(buf, {type:'array', cellDates:true});
         var parsed = parseInwardFile(wb);
         unionHeader(inwardHeaderUnion, parsed.header);
@@ -697,6 +702,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
 
     STATE.inventoryRows = inventoryRows; STATE.salesRows = salesRows; STATE.inwardRows = inwardRows;
+    STATE.batchDates = batchDates;
     if (inwardHeaderUnion.length) STATE.inwardHeader = inwardHeaderUnion;
     if (invHeaderUnion.length) STATE.inventoryHeader = invHeaderUnion;
     if (salesHeaderUnion.length) STATE.salesHeader = salesHeaderUnion;
@@ -809,22 +815,42 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
   var shipMselCtl, remMselCtl;
 
+  function fmtDDMMYYYY(ts){
+    if (!ts) return null;
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return null;
+    return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+  }
+
+  // Each filter's option list is narrowed by the OTHER filter's current selection (but not
+  // by its own), so picking remarks shows only the shipments that actually carry them, and
+  // vice versa — "Clear filters" is what gets you back to seeing everything.
   function renderShipmentFilterOptions(){
+    var rows = STATE.inwardRows.filter(function(r){ return selMasters.size === 0 || selMasters.has(masterOf(r.remark)); });
     var counts = {};
-    STATE.inwardRows.forEach(function(r){ counts[r.batch] = (counts[r.batch]||0) + 1; });
-    // prune selections for shipments that no longer exist
+    rows.forEach(function(r){ counts[r.batch] = (counts[r.batch]||0) + 1; });
     Array.from(selBatches).forEach(function(b){ if (!(b in counts)) selBatches.delete(b); });
     if (shipMselCtl) shipMselCtl.refresh();
-    shipMselOptionsCache = Object.keys(counts).sort().map(function(b){ return { value: b, label: b, count: counts[b] }; });
+    shipMselOptionsCache = Object.keys(counts).sort().map(function(b){
+      var d = fmtDDMMYYYY(STATE.batchDates[b]);
+      return { value: b, label: d ? (b + ' - ' + d) : b, count: counts[b] };
+    });
   }
   function renderRemarkFilterOptions(){
+    var rows = STATE.inwardRows.filter(function(r){ return selBatches.size === 0 || selBatches.has(r.batch); });
     var counts = {};
-    STATE.inwardRows.forEach(function(r){ var m = masterOf(r.remark); counts[m] = (counts[m]||0) + 1; });
+    rows.forEach(function(r){ var m = masterOf(r.remark); counts[m] = (counts[m]||0) + 1; });
     Array.from(selMasters).forEach(function(m){ if (!(m in counts)) selMasters.delete(m); });
     if (remMselCtl) remMselCtl.refresh();
     remMselOptionsCache = Object.keys(counts).sort().map(function(m){ return { value: m, label: m, count: counts[m] }; });
   }
   var shipMselOptionsCache = [], remMselOptionsCache = [];
+
+  function refreshFiltersAndDashboard(){
+    renderShipmentFilterOptions();
+    renderRemarkFilterOptions();
+    renderDashboard();
+  }
 
   // ---------------- dashboard ----------------
   function currentFilteredRows(){
@@ -1042,8 +1068,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
     document.querySelectorAll('.page-nav button').forEach(function(b){ b.addEventListener('click', function(){ switchPage(b.getAttribute('data-page')); }); });
 
-    shipMselCtl = buildMultiSelect('shipMselBtn', 'shipMselPanel', 'shipments', function(){ return shipMselOptionsCache; }, selBatches, renderDashboard, true);
-    remMselCtl = buildMultiSelect('remMselBtn', 'remMselPanel', 'remarks', function(){ return remMselOptionsCache; }, selMasters, renderDashboard, true);
+    shipMselCtl = buildMultiSelect('shipMselBtn', 'shipMselPanel', 'shipments', function(){ return shipMselOptionsCache; }, selBatches, refreshFiltersAndDashboard, true);
+    remMselCtl = buildMultiSelect('remMselBtn', 'remMselPanel', 'remarks', function(){ return remMselOptionsCache; }, selMasters, refreshFiltersAndDashboard, true);
 
     var agingMinInput = document.getElementById('agingMinInput'), agingMaxInput = document.getElementById('agingMaxInput');
     function readAgingInputs(){
@@ -1055,9 +1081,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     agingMaxInput.addEventListener('input', readAgingInputs);
 
     document.getElementById('clearFiltersBtn').addEventListener('click', function(){
-      selBatches.clear(); selMasters.clear(); shipMselCtl.refresh(); remMselCtl.refresh();
+      selBatches.clear(); selMasters.clear();
       agingMin = null; agingMax = null; agingMinInput.value = ''; agingMaxInput.value = '';
-      renderDashboard();
+      refreshFiltersAndDashboard();
     });
 
     document.getElementById('exportSoldBtn').addEventListener('click', function(){ doExport('sold'); });
