@@ -149,6 +149,7 @@
   tr:last-child td { border-bottom: none; }
   .badge { display: inline-block; font-size: 10.5px; padding: 2px 7px; border-radius: 100px; background: var(--surface-2); color: var(--ink-soft); margin: 1px 3px 1px 0; }
   .remark-input { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; width: 100%; max-width: 240px; }
+  .remark-input[readonly] { background: var(--surface-2); color: var(--ink-soft); cursor: pointer; }
   .remark-input.dirty-flash { border-color: var(--st-available); }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
 
@@ -256,12 +257,13 @@
         <div class="panel-head">
           <h2 class="panel-title">Remark master mapping</h2>
           <div class="toolbar">
+            <button class="btn ghost" id="lockToggleBtn">🔒 Locked — click to unlock</button>
             <button class="btn" id="exportMapBtn">Export mapping (.xlsx)</button>
             <label class="btn" style="cursor:pointer;margin:0;">Import mapping (.xlsx)<input type="file" id="importMapInput" accept=".xlsx" style="display:none;"></label>
             <button class="btn ghost" id="resetMapBtn">Reset to defaults</button>
           </div>
         </div>
-        <div class="panel-sub">Group the raw remarks found in your INWARD files into a master remark — type a new name or reuse an existing one. This drives the "Remark" filter on the Dashboard. Saved automatically in this browser; export/import to back it up or move it between computers.</div>
+        <div class="panel-sub">Group the raw remarks found in your INWARD files into a master remark — type a new name or reuse an existing one. This drives the "Remark" filter on the Dashboard. Everyone can view this table; editing it needs the password. Saved automatically in this browser; export/import to back it up, move it between computers, or publish it live.</div>
         <div style="overflow-x:auto;">
         <table><thead><tr><th>Raw remark</th><th class="num">Stones</th><th>Seen in</th><th>Master remark</th></tr></thead><tbody id="remarkMapTable"></tbody></table>
         </div>
@@ -579,18 +581,21 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
     var stored;
     try { stored = await idbGet('rootHandle'); } catch(e) { stored = null; }
+    // No stored folder at all means this browser has never connected its own data — that's
+    // the only case where falling back to the published snapshot is safe. A browser that HAS
+    // connected before must always be asked to reconnect, never silently dropped into shared
+    // mode — shared mode overwrites local state (including the remark mapping) with whatever
+    // was last published, which would otherwise clobber this machine's own live settings.
     if (!stored) { if (!(await loadSharedSnapshot(false))) showConnectPanel(); return; }
     rootHandle = stored;
     try {
       var perm = await rootHandle.queryPermission({ mode: 'read' });
-      if (perm === 'granted') { await afterHaveRoot(); }
-      else if (!(await loadSharedSnapshot(false))) {
-        showConnectPanel();
-        document.getElementById('connectPanel').querySelector('h2').textContent = 'Reconnect your STOCK DETAILS folder';
-        document.getElementById('connectPanel').querySelector('p').innerHTML = 'Browser permission resets each session — click to re-grant access to the same folder you picked before.';
-        document.getElementById('connectBtn2').textContent = 'Reconnect';
-      }
-    } catch(e) { if (!(await loadSharedSnapshot(false))) showConnectPanel(); }
+      if (perm === 'granted') { await afterHaveRoot(); return; }
+    } catch(e) { /* fall through to reconnect prompt below */ }
+    showConnectPanel();
+    document.getElementById('connectPanel').querySelector('h2').textContent = 'Reconnect your STOCK DETAILS folder';
+    document.getElementById('connectPanel').querySelector('p').innerHTML = 'Browser permission resets each session — click to re-grant access to the same folder you picked before.';
+    document.getElementById('connectBtn2').textContent = 'Reconnect';
   }
 
   async function disconnect(){
@@ -602,12 +607,15 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     document.getElementById('syncNowBtn').hidden = true;
     document.getElementById('publishBtn').hidden = true;
     document.getElementById('disconnectBtn').hidden = true;
-    setSyncText('Not connected'); setLiveDot(''); showWarnings([]);
-    if (!(await loadSharedSnapshot(false))) {
-      showConnectPanel();
-      document.getElementById('connectPanel').querySelector('h2').textContent = 'Connect your STOCK DETAILS folder';
-      document.getElementById('connectBtn2').textContent = 'Choose folder…';
-    }
+    setSyncText('Not connected'); setLiveDot('');
+    showWarnings([]); document.getElementById('sharedBanner').hidden = true;
+    isSharedMode = false;
+    // Deliberately does NOT fall back to the shared snapshot — disconnecting is an explicit
+    // choice on this machine's own data, and shared mode would overwrite local state (like
+    // the remark mapping) with whatever's published. Use "Connect data folder" to go back.
+    showConnectPanel();
+    document.getElementById('connectPanel').querySelector('h2').textContent = 'Connect your STOCK DETAILS folder';
+    document.getElementById('connectBtn2').textContent = 'Choose folder…';
   }
 
   // ---------------- polling ----------------
@@ -743,6 +751,30 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     STATE.remarkMap = m; saveRemarkMap();
   }
   function masterOf(raw){ return STATE.remarkMap[raw] || raw; }
+
+  // ---------------- editor password gate ----------------
+  // This is a static site with no server, so this is a soft deterrent against casual/accidental
+  // edits from anyone who has the link — NOT real security. The password is hashed (SHA-256)
+  // rather than stored in plain text, but anyone reading the page's source could still find the
+  // hash and attempt to crack it offline. Good enough to stop "oops I clicked the wrong thing",
+  // not to protect anything sensitive.
+  var EDITOR_HASH = '6ac6307d84f39735c08a71021acae7306657ff4f3e96eec1d8db6c00effbe6a1'; // temporary default: "aspeco2026" — tell me your real password and I'll swap this
+  var UNLOCK_KEY = 'stockLedger.editorUnlocked';
+  function isEditorUnlocked(){ return localStorage.getItem(UNLOCK_KEY) === '1'; }
+  function lockEditor(){ localStorage.removeItem(UNLOCK_KEY); renderRemarksPage(); }
+  async function sha256Hex(text){
+    var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  }
+  async function requireEditorUnlock(){
+    if (isEditorUnlocked()) return true;
+    var pw = prompt('Enter the password to edit the remark mapping:');
+    if (pw === null) return false;
+    var hash = await sha256Hex(pw);
+    if (hash === EDITOR_HASH) { localStorage.setItem(UNLOCK_KEY, '1'); renderRemarksPage(); return true; }
+    alert('Wrong password.');
+    return false;
+  }
 
   // ---------------- multi-select filter widgets ----------------
   var openMselPanels = [];
@@ -1031,7 +1063,16 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       var tdMaster = document.createElement('td');
       var input = document.createElement('input'); input.className = 'remark-input'; input.setAttribute('list','masterRemarkList');
       input.value = STATE.remarkMap[raw] || raw;
+      var unlocked = isEditorUnlocked();
+      input.readOnly = !unlocked;
+      if (!unlocked) input.title = 'Click to enter the edit password';
+      input.addEventListener('focus', function(){
+        if (isEditorUnlocked()) return;
+        input.blur();
+        requireEditorUnlock();
+      });
       input.addEventListener('change', function(){
+        if (!isEditorUnlocked()) { input.value = STATE.remarkMap[raw] || raw; return; }
         STATE.remarkMap[raw] = input.value.trim() || raw;
         saveRemarkMap();
         input.classList.add('dirty-flash');
@@ -1044,6 +1085,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     });
     var masters = Array.from(new Set(Object.values(STATE.remarkMap))).sort();
     document.getElementById('masterRemarkList').innerHTML = masters.map(function(m){ return '<option value="'+escapeHtml(m)+'">'; }).join('');
+
+    var lockBtn = document.getElementById('lockToggleBtn');
+    if (lockBtn) lockBtn.textContent = isEditorUnlocked() ? '🔓 Editing unlocked — click to lock' : '🔒 Locked — click to unlock';
   }
 
   // ---------------- page nav ----------------
@@ -1090,8 +1134,16 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     document.getElementById('exportRemainingBtn').addEventListener('click', function(){ doExport('remaining'); });
 
     document.getElementById('exportMapBtn').addEventListener('click', exportMappingXlsx);
-    document.getElementById('importMapInput').addEventListener('change', function(e){ if (e.target.files[0]) importMappingXlsx(e.target.files[0]); e.target.value = ''; });
-    document.getElementById('resetMapBtn').addEventListener('click', resetRemarkMap);
+    document.getElementById('importMapInput').addEventListener('change', async function(e){
+      var f = e.target.files[0]; e.target.value = '';
+      if (f && (await requireEditorUnlock())) importMappingXlsx(f);
+    });
+    document.getElementById('resetMapBtn').addEventListener('click', async function(){
+      if (await requireEditorUnlock()) resetRemarkMap();
+    });
+    document.getElementById('lockToggleBtn').addEventListener('click', async function(){
+      if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
+    });
 
     window.addEventListener('pointermove', function(e){ if (tipEl.classList.contains('show')) moveTip(e); });
 
