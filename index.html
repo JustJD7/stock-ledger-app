@@ -123,6 +123,21 @@
   .kpi-foot { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
   .kpi-share-track { height: 4px; border-radius: 4px; background: var(--line); margin-top: 10px; overflow: hidden; }
   .kpi-share-fill { height: 100%; background: var(--kpi-color); border-radius: 4px; }
+  .kpi-tile-clickable { cursor: pointer; transition: transform .08s ease, box-shadow .08s ease; }
+  .kpi-tile-clickable:hover, .kpi-tile-clickable:focus-visible { box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--kpi-color) 35%, transparent); transform: translateY(-1px); }
+
+  .preview-overlay { position: fixed; inset: 0; background: rgba(11,11,11,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 24px; }
+  .preview-panel { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 1040px; max-height: 86vh; display: flex; flex-direction: column; padding: 20px 22px; }
+  .preview-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .preview-head h3 { font-family: var(--font-display); font-weight: 500; font-size: 17px; margin: 0; }
+  .preview-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; flex: 1; }
+  .preview-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .preview-table th { position: sticky; top: 0; background: var(--surface-2); text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-strong); white-space: nowrap; font-weight: 600; color: var(--ink-soft); }
+  .preview-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .preview-table tr:last-child td { border-bottom: none; }
+  .preview-table tr:hover td { background: var(--surface-2); }
+  .preview-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .preview-foot { margin-top: 14px; display: flex; justify-content: flex-end; }
 
   .dist-bar { display: flex; height: 26px; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
   .dist-seg { position: relative; border-right: 2px solid var(--surface); }
@@ -278,6 +293,19 @@
 </div>
 
 <div class="tip" id="tip"></div>
+
+<div class="preview-overlay" id="previewOverlay" hidden>
+  <div class="preview-panel" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+    <div class="preview-head">
+      <h3 id="previewTitle">Preview</h3>
+      <button class="btn ghost" id="previewCloseBtn">✕ Close</button>
+    </div>
+    <div id="previewBody"></div>
+    <div class="preview-foot">
+      <button class="btn primary" id="previewExportBtn">Export this view (.xlsx)</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /*! xlsx.js (C) 2013-present SheetJS -- http://sheetjs.com */
@@ -533,8 +561,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       STATE.inventoryMap = new Map(STATE.inventoryRows.map(function(r){ return [r.stoneId, r]; }));
       STATE.salesMap = new Map(STATE.salesRows.map(function(r){ return [r.stoneId, r]; }));
       // Shared viewers always take the just-published mapping (not just when their own
-      // browser has none yet) so a refresh always reflects the latest published groupings,
-      // not whatever was cached from an earlier visit.
+      // browser has none yet) so a refresh always reflects whatever was last published,
+      // not whatever got cached here from an earlier visit.
       if (snap.remarkMap) { STATE.remarkMap = snap.remarkMap; saveRemarkMap(); }
       ensureRemarkMap();
 
@@ -699,8 +727,12 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         var label = inwFiles[i].name.replace(/\.xlsx$/i,'');
         var file = await inwFiles[i].handle.getFile();
         buf = await file.arrayBuffer();
-        batchDates[label] = file.lastModified;
         wb = XLSX.read(buf, {type:'array', cellDates:true});
+        // The file's OS "last modified" stamp reflects whenever it was last copied/synced —
+        // often the same day for every file. The workbook's own Created-date property (baked
+        // in by whatever tool generated the export) is what actually varies per shipment.
+        var createdDate = wb.Props && wb.Props.CreatedDate instanceof Date ? wb.Props.CreatedDate : null;
+        batchDates[label] = createdDate ? createdDate.getTime() : file.lastModified;
         var parsed = parseInwardFile(wb);
         unionHeader(inwardHeaderUnion, parsed.header);
         parsed.rows.forEach(function(r){
@@ -905,16 +937,87 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     STATUS_ORDER.forEach(function(k){
       var s = byStatus[k]; var meta = STATUS_META[k];
       var share = total ? (s.cost/total*100) : 0;
-      var tile = document.createElement('div'); tile.className = 'kpi-tile';
+      var tile = document.createElement('div'); tile.className = 'kpi-tile kpi-tile-clickable';
       tile.style.setProperty('--kpi-color', meta.color);
+      tile.title = 'Click to preview these stones';
+      tile.tabIndex = 0; tile.setAttribute('role', 'button');
       tile.innerHTML =
         '<div class="kpi-name"><span class="sw"></span>' + meta.label + '</div>' +
         '<div class="kpi-value">' + fmtUSDFull(s.cost) + '</div>' +
         '<div class="kpi-foot">' + fmtNum(s.pcs) + ' pcs &middot; ' + share.toFixed(0) + '%</div>' +
         '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>';
+      tile.addEventListener('click', function(){ openStatusPreview(k); });
+      tile.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openStatusPreview(k); } });
       rowEl.appendChild(tile);
     });
   }
+
+  // ---------------- status preview modal ----------------
+  var PREVIEW_ROW_CAP = 300;
+
+  function rowsForStatusExport(rows, isSold){
+    var header = isSold ? STATE.salesHeader : STATE.inventoryHeader;
+    var sourceMap = isSold ? STATE.salesMap : STATE.inventoryMap;
+    var dataRows = [], skipped = 0;
+    rows.forEach(function(r){
+      var master = sourceMap.get(r.stoneId);
+      if (!master) { skipped++; return; }
+      dataRows.push(projectRow(header, master));
+    });
+    return { header: header, dataRows: dataRows, skipped: skipped };
+  }
+
+  function downloadAoaAsXlsx(aoa, sheetName, filename){
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName.slice(0, 31));
+    XLSX.writeFile(wb, filename);
+  }
+
+  function cellDisplay(cell){
+    if (cell === null || cell === undefined) return '';
+    if (cell instanceof Date) return fmtDDMMYYYY(cell.getTime()) || cell.toISOString().slice(0,10);
+    return String(cell);
+  }
+
+  function openStatusPreview(statusKey){
+    if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
+    var meta = STATUS_META[statusKey];
+    var isSold = statusKey === 'SOLD';
+    var header = isSold ? STATE.salesHeader : STATE.inventoryHeader;
+    if (!header.length) { alert((isSold ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
+
+    var rows = currentFilteredRows().filter(function(r){ return statusOf(r.stoneId) === statusKey; });
+    var built = rowsForStatusExport(rows, isSold);
+
+    document.getElementById('previewTitle').textContent = meta.label + ' — ' + fmtNum(built.dataRows.length) + ' stones';
+
+    var shown = built.dataRows.slice(0, PREVIEW_ROW_CAP);
+    var html = '<div class="preview-table-wrap"><table class="preview-table"><thead><tr>';
+    built.header.forEach(function(h){ html += '<th>' + escapeHtml(h == null ? '' : String(h)) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    if (!shown.length) {
+      html += '<tr><td colspan="' + built.header.length + '" style="color:var(--muted);">No stones match this status in the current filters.</td></tr>';
+    }
+    shown.forEach(function(row){
+      html += '<tr>';
+      row.forEach(function(cell){ html += '<td>' + escapeHtml(cellDisplay(cell)) + '</td>'; });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    if (built.dataRows.length > PREVIEW_ROW_CAP) html += '<div class="preview-note">Showing the first ' + fmtNum(PREVIEW_ROW_CAP) + ' of ' + fmtNum(built.dataRows.length) + ' — export to get all of them.</div>';
+    if (built.skipped) html += '<div class="preview-note">' + fmtNum(built.skipped) + ' stone(s) with this status weren\'t found in ' + (isSold ? 'SALES' : 'INVENTORY') + ' and aren\'t shown here.</div>';
+    document.getElementById('previewBody').innerHTML = html;
+
+    var exportBtn = document.getElementById('previewExportBtn');
+    exportBtn.disabled = !built.dataRows.length;
+    exportBtn.onclick = function(){
+      downloadAoaAsXlsx([built.header].concat(built.dataRows), meta.label, statusKey.toLowerCase().replace(/_/g,'-') + '-stones-' + todayStamp() + '.xlsx');
+    };
+
+    document.getElementById('previewOverlay').hidden = false;
+  }
+
+  function closePreviewModal(){ document.getElementById('previewOverlay').hidden = true; }
 
   function buildDistBar(barEl, legendEl, byStatus){
     barEl.innerHTML = ''; legendEl.innerHTML = '';
@@ -974,31 +1077,17 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   function doExport(kind){
     try {
       if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
-      var rows = currentFilteredRows();
-      var subset = rows.filter(function(r){ var sold = statusOf(r.stoneId) === 'SOLD'; return kind === 'sold' ? sold : !sold; });
-      if (!subset.length) { alert('No ' + (kind === 'sold' ? 'sold' : 'remaining') + ' stones in the current selection.'); return; }
+      var isSold = kind === 'sold';
+      var rows = currentFilteredRows().filter(function(r){ var sold = statusOf(r.stoneId) === 'SOLD'; return isSold ? sold : !sold; });
+      if (!rows.length) { alert('No ' + (isSold ? 'sold' : 'remaining') + ' stones in the current selection.'); return; }
+      if (!(isSold ? STATE.salesHeader : STATE.inventoryHeader).length) { alert((isSold ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
 
-      var header, sourceMap, skipped = 0;
-      if (kind === 'sold') { header = STATE.salesHeader; sourceMap = STATE.salesMap; }
-      else { header = STATE.inventoryHeader; sourceMap = STATE.inventoryMap; }
+      var built = rowsForStatusExport(rows, isSold);
+      if (!built.dataRows.length) { alert('None of the matching stones were found in ' + (isSold ? 'SALES' : 'INVENTORY') + ' — nothing to export.'); return; }
 
-      if (!header.length) { alert((kind === 'sold' ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
+      downloadAoaAsXlsx([built.header].concat(built.dataRows), isSold ? 'Sold' : 'Remaining', (isSold ? 'sold-stones-' : 'remaining-stones-') + todayStamp() + '.xlsx');
 
-      var dataRows = [];
-      subset.forEach(function(r){
-        var master = sourceMap.get(r.stoneId);
-        if (!master) { skipped++; return; }
-        dataRows.push(projectRow(header, master));
-      });
-      if (!dataRows.length) { alert('None of the matching stones were found in ' + (kind === 'sold' ? 'SALES' : 'INVENTORY') + ' — nothing to export.'); return; }
-
-      var aoa = [header].concat(dataRows);
-      var wb = XLSX.utils.book_new();
-      var sheetName = kind === 'sold' ? 'Sold' : 'Remaining';
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName);
-      XLSX.writeFile(wb, (kind === 'sold' ? 'sold-stones-' : 'remaining-stones-') + todayStamp() + '.xlsx');
-
-      if (skipped) alert('Exported ' + dataRows.length + ' stones. ' + skipped + ' stone' + (skipped===1?'':'s') + ' could not be matched in ' + (kind === 'sold' ? 'SALES' : 'INVENTORY') + ' and ' + (skipped===1?'was':'were') + ' skipped.');
+      if (built.skipped) alert('Exported ' + built.dataRows.length + ' stones. ' + built.skipped + ' stone' + (built.skipped===1?'':'s') + ' could not be matched in ' + (isSold ? 'SALES' : 'INVENTORY') + ' and ' + (built.skipped===1?'was':'were') + ' skipped.');
     } catch(e) { alert('Export failed: ' + e.message); console.error(e); }
   }
 
@@ -1098,7 +1187,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   }
 
   // ---------------- init ----------------
-  document.addEventListener('DOMContentLoaded', function(){
+  document.addEventListener('DOMContentLoaded', async function(){
     tipEl = document.getElementById('tip');
     STATE.remarkMap = loadRemarkMap();
 
@@ -1144,6 +1233,10 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     document.getElementById('lockToggleBtn').addEventListener('click', async function(){
       if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
     });
+
+    document.getElementById('previewCloseBtn').addEventListener('click', closePreviewModal);
+    document.getElementById('previewOverlay').addEventListener('click', function(e){ if (e.target.id === 'previewOverlay') closePreviewModal(); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && !document.getElementById('previewOverlay').hidden) closePreviewModal(); });
 
     window.addEventListener('pointermove', function(e){ if (tipEl.classList.contains('show')) moveTip(e); });
 
