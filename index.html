@@ -126,6 +126,12 @@
   .kpi-tile-clickable { cursor: pointer; transition: transform .08s ease, box-shadow .08s ease; }
   .kpi-tile-clickable:hover, .kpi-tile-clickable:focus-visible { box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--kpi-color) 35%, transparent); transform: translateY(-1px); }
 
+  .kpi-tree { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 3px; }
+  .kpi-tree-row { display: flex; align-items: baseline; gap: 5px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
+  .kpi-tree-row .branch { color: var(--muted); font-family: var(--font-mono); flex: none; }
+  .kpi-tree-row .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .kpi-tree-row b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
   .preview-overlay { position: fixed; inset: 0; background: rgba(11,11,11,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 24px; }
   .preview-overlay[hidden] { display: none; }
   .preview-panel { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 1040px; max-height: 86vh; display: flex; flex-direction: column; padding: 20px 22px; overflow: hidden; }
@@ -168,6 +174,12 @@
   .remark-input { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; width: 100%; max-width: 240px; }
   .remark-input[readonly] { background: var(--surface-2); color: var(--ink-soft); cursor: pointer; }
   .remark-input.dirty-flash { border-color: var(--st-available); }
+  .entity-select { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; width: 100%; max-width: 200px; }
+  .entity-select.locked { background: var(--surface-2); color: var(--ink-soft); cursor: pointer; }
+  .entity-select.dirty-flash { border-color: var(--st-available); }
+  .entity-badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
+  .entity-badge.client { background: var(--accent-soft); color: var(--accent); }
+  .entity-badge.sister { background: color-mix(in srgb, var(--st-sold) 18%, transparent); color: var(--st-sold); }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
 
   footer { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; line-height: 1.7; }
@@ -191,6 +203,7 @@
     <nav class="page-nav">
       <button data-page="dashboard" class="active">Dashboard</button>
       <button data-page="remarks">Remark Mapping</button>
+      <button data-page="entities">Entity Mapping</button>
     </nav>
   </div>
 
@@ -199,7 +212,7 @@
     <div class="syncbar-actions">
       <button class="btn primary" id="connectBtn">Connect data folder</button>
       <button class="btn ghost" id="syncNowBtn" hidden>Sync now</button>
-      <button class="btn ghost" id="publishBtn" hidden title="Publish your live data so anyone with the link can see it">Publish live data</button>
+      <button class="btn ghost" id="publishBtn" hidden title="Writes data.json straight into your repo folder and pushes it live automatically">Publish live data</button>
       <button class="btn ghost" id="disconnectBtn" hidden>Disconnect</button>
     </div>
   </div>
@@ -288,6 +301,25 @@
       </div>
     </section>
 
+    <!-- ===================== ENTITY MAPPING ===================== -->
+    <section class="page" id="page-entities" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Client / Sister Company mapping</h2>
+          <div class="toolbar">
+            <button class="btn ghost" id="lockToggleBtn2">🔒 Locked — click to unlock</button>
+            <button class="btn" id="exportEntityBtn">Export mapping (.xlsx)</button>
+            <label class="btn" style="cursor:pointer;margin:0;">Import mapping (.xlsx)<input type="file" id="importEntityInput" accept=".xlsx" style="display:none;"></label>
+            <button class="btn ghost" id="resetEntityBtn">Reset to defaults</button>
+          </div>
+        </div>
+        <div class="panel-sub">Classify each raw remark (party) found in your INWARD files as belonging to a <b>Client</b> or to your <b>Sister Company</b>. This drives the Client / Sister Company breakdown shown under On Memo, Hold, Sold and Other on the Dashboard. Everyone can view this table; editing it needs the password. New remarks default to "Client" until you reassign them. Saved automatically in this browser; export/import to back it up, move it between computers, or publish it live.</div>
+        <div style="overflow-x:auto;">
+        <table><thead><tr><th>Raw remark</th><th class="num">Stones</th><th>Seen in</th><th>Entity</th></tr></thead><tbody id="entityMapTable"></tbody></table>
+        </div>
+      </div>
+    </section>
+
     <footer>
       Reads <code>INVENTORY/*.xlsx</code>, <code>SALES/*.xlsx</code> and <code>INWARD/*.xlsx</code> directly from disk and checks every second for edits — only re-parses and redraws when a file actually changes. "Remaining" means not yet sold (available, on memo, hold, or other). Nothing leaves your machine; all parsing happens in this browser tab.
     </footer>
@@ -351,8 +383,9 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   var STATE = {
     inventoryRows: [], salesRows: [], inwardRows: [],
     inwardHeader: [], inventoryHeader: [], salesHeader: [],
-    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}, batchDates: {}
+    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}, entityMap: {}, batchDates: {}
   };
+  var ENTITY_CLIENT = 'Client', ENTITY_SISTER = 'Sister Company';
   var selBatches = new Set();   // empty = "all"
   var selMasters = new Set();   // empty = "all"
   var agingMin = null, agingMax = null; // null = unbounded
@@ -567,6 +600,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       // not whatever got cached here from an earlier visit.
       if (snap.remarkMap) { STATE.remarkMap = snap.remarkMap; saveRemarkMap(); }
       ensureRemarkMap();
+      if (snap.entityMap) { STATE.entityMap = snap.entityMap; saveEntityMap(); }
+      ensureEntityMap();
 
       isSharedMode = true;
       showApp();
@@ -579,12 +614,38 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       document.getElementById('sharedBanner').hidden = false;
       document.getElementById('sharedBannerText').textContent = 'Showing shared data published ' + when + '.';
 
-      renderShipmentFilterOptions(); renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage();
+      renderShipmentFilterOptions(); renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage(); renderEntityPage();
       return true;
     } catch(e) { if (showAlertIfMissing) alert('Could not load shared data: ' + e.message); return false; }
   }
 
-  function publishSnapshot(){
+  // A background watcher (install-auto-publish.bat) sits on this PC watching the repo folder's
+  // data.json for changes and auto git-add/commit/pushes it. So publishing here only has to write
+  // the file straight into that folder — no more download-then-move-then-run-a-bat-file dance.
+  var repoHandle = null;
+  async function ensureRepoHandle(forceReprompt){
+    if (!forceReprompt) {
+      if (repoHandle) return repoHandle;
+      var stored;
+      try { stored = await idbGet('repoHandle'); } catch(e) { stored = null; }
+      if (stored) {
+        try {
+          await stored.getFileHandle('index.html');
+          var perm = await stored.queryPermission({ mode: 'readwrite' });
+          if (perm !== 'granted') perm = await stored.requestPermission({ mode: 'readwrite' });
+          if (perm === 'granted') { repoHandle = stored; return repoHandle; }
+        } catch(e) { /* stale or wrong folder — fall through and re-prompt */ }
+      }
+    }
+    alert('One-time setup: pick your stock-ledger-app folder (the one with index.html and publish.bat in it) so future publishes can write straight into it.');
+    var handle = await window.showDirectoryPicker({ id: 'stock-ledger-repo', mode: 'readwrite' });
+    await handle.getFileHandle('index.html'); // throws if this isn't the repo folder
+    await idbSet('repoHandle', handle);
+    repoHandle = handle;
+    return repoHandle;
+  }
+
+  async function publishSnapshot(){
     try {
       if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
       var snapshot = {
@@ -596,9 +657,30 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         inwardHeader: STATE.inwardHeader,
         inwardRows: STATE.inwardRows.map(function(r){ return { batch: r.batch, raw: projectRow(STATE.inwardHeader, r).map(serializeValue) }; }),
         batchDates: STATE.batchDates,
-        remarkMap: STATE.remarkMap
+        remarkMap: STATE.remarkMap,
+        entityMap: STATE.entityMap
       };
-      downloadBlob(new Blob([JSON.stringify(snapshot)], {type:'application/json'}), 'data.json');
+      var json = JSON.stringify(snapshot);
+
+      if (window.showDirectoryPicker) {
+        try {
+          var handle = await ensureRepoHandle(false);
+          var fileHandle = await handle.getFileHandle('data.json', { create: true });
+          var writable = await fileHandle.createWritable();
+          await writable.write(json);
+          await writable.close();
+          alert('Published! data.json was updated in your repo folder — the auto-publish watcher will push it live within a few seconds. (Run install-auto-publish.bat once if you haven\'t already set that up.)');
+          return;
+        } catch(e) {
+          if (e.name === 'AbortError') return; // user cancelled the folder picker
+          console.error(e);
+          alert('Could not write directly into your repo folder (' + e.message + '). Falling back to the manual download — pick the folder again next time you publish.');
+          try { await idbDel('repoHandle'); } catch(e2) {}
+          repoHandle = null;
+        }
+      }
+
+      downloadBlob(new Blob([json], {type:'application/json'}), 'data.json');
       alert('data.json downloaded. Double-click publish.bat in your stock-ledger-app folder to push it live — that\'s the link everyone else sees.');
     } catch(e) { alert('Publish failed: ' + e.message); console.error(e); }
   }
@@ -689,6 +771,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         renderRemarkFilterOptions();
         renderDashboard();
         renderRemarksPage();
+        renderEntityPage();
       } else {
         setSyncText('Watching for changes — last synced ' + new Date().toLocaleTimeString());
       }
@@ -751,6 +834,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     STATE.inventoryMap = new Map(inventoryRows.map(function(r){ return [r.stoneId, r]; }));
     STATE.salesMap = new Map(salesRows.map(function(r){ return [r.stoneId, r]; }));
     ensureRemarkMap();
+    ensureEntityMap();
     return warnings;
   }
 
@@ -786,16 +870,27 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   }
   function masterOf(raw){ return STATE.remarkMap[raw] || raw; }
 
+  // ---------------- entity (client / sister company) mapping ----------------
+  function loadEntityMap(){ try { return JSON.parse(localStorage.getItem('stockLedger.entityMap.v1')) || {}; } catch(e){ return {}; } }
+  function saveEntityMap(){ localStorage.setItem('stockLedger.entityMap.v1', JSON.stringify(STATE.entityMap)); }
+  function ensureEntityMap(){
+    var m = STATE.entityMap || {};
+    var raws = {}; STATE.inwardRows.forEach(function(r){ raws[r.remark] = true; });
+    Object.keys(raws).forEach(function(raw){ if (!(raw in m)) m[raw] = ENTITY_CLIENT; });
+    STATE.entityMap = m; saveEntityMap();
+  }
+  function entityOf(raw){ return STATE.entityMap[raw] === ENTITY_SISTER ? ENTITY_SISTER : ENTITY_CLIENT; }
+
   // ---------------- editor password gate ----------------
   // This is a static site with no server, so this is a soft deterrent against casual/accidental
   // edits from anyone who has the link — NOT real security. The password is hashed (SHA-256)
   // rather than stored in plain text, but anyone reading the page's source could still find the
   // hash and attempt to crack it offline. Good enough to stop "oops I clicked the wrong thing",
   // not to protect anything sensitive.
-  var EDITOR_HASH = '6ac6307d84f39735c08a71021acae7306657ff4f3e96eec1d8db6c00effbe6a1'; // temporary default: "aspeco2026" — tell me your real password and I'll swap this
+  var EDITOR_HASH = 'b54c9e1d229a781799aae3bbc88f4ff4812b7cc1cbaffaa91fbdbde996318aa1'; // password: "ASPECO123"
   var UNLOCK_KEY = 'stockLedger.editorUnlocked';
   function isEditorUnlocked(){ return localStorage.getItem(UNLOCK_KEY) === '1'; }
-  function lockEditor(){ localStorage.removeItem(UNLOCK_KEY); renderRemarksPage(); }
+  function lockEditor(){ localStorage.removeItem(UNLOCK_KEY); renderRemarksPage(); renderEntityPage(); }
   async function sha256Hex(text){
     var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
@@ -805,7 +900,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     var pw = prompt('Enter the password to edit the remark mapping:');
     if (pw === null) return false;
     var hash = await sha256Hex(pw);
-    if (hash === EDITOR_HASH) { localStorage.setItem(UNLOCK_KEY, '1'); renderRemarksPage(); return true; }
+    if (hash === EDITOR_HASH) { localStorage.setItem(UNLOCK_KEY, '1'); renderRemarksPage(); renderEntityPage(); return true; }
     alert('Wrong password.');
     return false;
   }
@@ -945,11 +1040,20 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       tile.style.setProperty('--kpi-color', meta.color);
       tile.title = 'Click to preview these stones';
       tile.tabIndex = 0; tile.setAttribute('role', 'button');
+      var treeHtml = '';
+      if (k !== 'AVAILABLE' && s.pcs > 0) {
+        var cli = s.entity[ENTITY_CLIENT], sis = s.entity[ENTITY_SISTER];
+        treeHtml = '<div class="kpi-tree">' +
+          '<div class="kpi-tree-row"><span class="branch">├</span><span class="lbl">Client</span><b>' + fmtNum(cli.pcs) + '</b></div>' +
+          '<div class="kpi-tree-row"><span class="branch">└</span><span class="lbl">Sister Company</span><b>' + fmtNum(sis.pcs) + '</b></div>' +
+          '</div>';
+      }
       tile.innerHTML =
         '<div class="kpi-name"><span class="sw"></span>' + meta.label + '</div>' +
         '<div class="kpi-value">' + fmtUSDFull(s.cost) + '</div>' +
         '<div class="kpi-foot">' + fmtNum(s.pcs) + ' pcs &middot; ' + share.toFixed(0) + '%</div>' +
-        '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>';
+        '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>' +
+        treeHtml;
       tile.addEventListener('click', function(){ openStatusPreview(k); });
       tile.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openStatusPreview(k); } });
       rowEl.appendChild(tile);
@@ -1042,12 +1146,18 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
   function renderDashboard(){
     var rows = currentFilteredRows();
-    var byStatus = {}; STATUS_ORDER.forEach(function(k){ byStatus[k] = { pcs:0, cost:0 }; });
+    var byStatus = {}; STATUS_ORDER.forEach(function(k){
+      byStatus[k] = { pcs:0, cost:0, entity: {} };
+      byStatus[k].entity[ENTITY_CLIENT] = { pcs:0, cost:0 };
+      byStatus[k].entity[ENTITY_SISTER] = { pcs:0, cost:0 };
+    });
     var totalCts = 0, totalCost = 0, agingSum = 0, agingCount = 0;
     rows.forEach(function(r){
       totalCts += r.cts; totalCost += r.cost;
       var st = statusOf(r.stoneId);
       byStatus[st].pcs++; byStatus[st].cost += r.cost;
+      var ent = entityOf(r.remark);
+      byStatus[st].entity[ent].pcs++; byStatus[st].entity[ent].cost += r.cost;
       var a = agingDaysOf(r.stoneId);
       if (a !== null) { agingSum += a; agingCount++; }
     });
@@ -1136,6 +1246,47 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage();
   }
 
+  function exportEntityMapXlsx(){
+    try {
+      var rows = [['Raw Remark','Entity']];
+      Object.keys(STATE.entityMap).sort().forEach(function(raw){ rows.push([raw, entityOf(raw)]); });
+      var wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Entity Mapping');
+      XLSX.writeFile(wb, 'entity-mapping-' + todayStamp() + '.xlsx');
+    } catch(e) { alert('Export failed: ' + e.message); console.error(e); }
+  }
+
+  function importEntityMapXlsx(file){
+    var reader = new FileReader();
+    reader.onload = function(){
+      try {
+        var wb = XLSX.read(reader.result, {type:'array'});
+        var rows = sheetToRows(wb, wb.SheetNames[0]);
+        var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
+        var rawIdx = header.indexOf('Raw Remark'), entIdx = header.indexOf('Entity');
+        if (rawIdx === -1 || entIdx === -1) { alert('That file needs "Raw Remark" and "Entity" columns — export one first to see the format.'); return; }
+        var applied = 0;
+        for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
+          var raw = r[rawIdx]; if (raw===null||raw===undefined||raw==='') continue;
+          var val = r[entIdx]; val = (val===null||val===undefined) ? '' : String(val).trim().toLowerCase();
+          STATE.entityMap[String(raw)] = (val.indexOf('sister') === 0) ? ENTITY_SISTER : ENTITY_CLIENT;
+          applied++;
+        }
+        ensureEntityMap(); saveEntityMap();
+        renderDashboard(); renderEntityPage();
+        alert('Applied ' + applied + ' entity mapping' + (applied===1?'':'s') + '.');
+      } catch(e) { alert('Could not read that file: ' + e.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function resetEntityMap(){
+    if (!confirm('Reset every raw remark back to "Client"? This clears your Sister Company assignments.')) return;
+    var m = {}; STATE.inwardRows.forEach(function(r){ m[r.remark] = ENTITY_CLIENT; });
+    STATE.entityMap = m; saveEntityMap();
+    renderDashboard(); renderEntityPage();
+  }
+
   // ---------------- remark mapping page ----------------
   function renderRemarksPage(){
     var counts = {}, batchesByRaw = {};
@@ -1183,17 +1334,68 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     if (lockBtn) lockBtn.textContent = isEditorUnlocked() ? '🔓 Editing unlocked — click to lock' : '🔒 Locked — click to unlock';
   }
 
+  function renderEntityPage(){
+    var counts = {}, batchesByRaw = {};
+    STATE.inwardRows.forEach(function(r){
+      counts[r.remark] = (counts[r.remark]||0) + 1;
+      if (!batchesByRaw[r.remark]) batchesByRaw[r.remark] = new Set();
+      batchesByRaw[r.remark].add(r.batch);
+    });
+    var rawList = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; });
+    var tbody = document.getElementById('entityMapTable'); tbody.innerHTML = '';
+    if (!rawList.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Connect a folder to see remarks here.</td></tr>'; }
+    var unlocked = isEditorUnlocked();
+    rawList.forEach(function(raw){
+      var tr = document.createElement('tr');
+      var tdRaw = document.createElement('td'); tdRaw.textContent = raw;
+      var tdCount = document.createElement('td'); tdCount.className = 'num'; tdCount.textContent = fmtNum(counts[raw]);
+      var tdBatches = document.createElement('td');
+      Array.from(batchesByRaw[raw]).sort().forEach(function(b){ var sp = document.createElement('span'); sp.className='badge'; sp.textContent=b; tdBatches.appendChild(sp); });
+      var tdEnt = document.createElement('td');
+      var select = document.createElement('select'); select.className = 'entity-select' + (unlocked ? '' : ' locked');
+      [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(opt){
+        var o = document.createElement('option'); o.value = opt; o.textContent = opt; select.appendChild(o);
+      });
+      select.value = entityOf(raw);
+      if (!unlocked) select.title = 'Click to enter the edit password';
+      select.addEventListener('mousedown', function(e){
+        if (isEditorUnlocked()) return;
+        e.preventDefault(); select.blur(); requireEditorUnlock();
+      });
+      select.addEventListener('keydown', function(e){
+        if (isEditorUnlocked()) return;
+        e.preventDefault(); requireEditorUnlock();
+      });
+      select.addEventListener('change', function(){
+        if (!isEditorUnlocked()) { select.value = entityOf(raw); return; }
+        STATE.entityMap[raw] = select.value === ENTITY_SISTER ? ENTITY_SISTER : ENTITY_CLIENT;
+        saveEntityMap();
+        select.classList.add('dirty-flash');
+        setTimeout(function(){ select.classList.remove('dirty-flash'); }, 700);
+        renderDashboard();
+      });
+      tdEnt.appendChild(select);
+      tr.appendChild(tdRaw); tr.appendChild(tdCount); tr.appendChild(tdBatches); tr.appendChild(tdEnt);
+      tbody.appendChild(tr);
+    });
+
+    var lockBtn2 = document.getElementById('lockToggleBtn2');
+    if (lockBtn2) lockBtn2.textContent = isEditorUnlocked() ? '🔓 Editing unlocked — click to lock' : '🔒 Locked — click to unlock';
+  }
+
   // ---------------- page nav ----------------
   function switchPage(page){
     document.querySelectorAll('.page-nav button').forEach(function(b){ b.classList.toggle('active', b.getAttribute('data-page') === page); });
     document.getElementById('page-dashboard').hidden = (page !== 'dashboard');
     document.getElementById('page-remarks').hidden = (page !== 'remarks');
+    document.getElementById('page-entities').hidden = (page !== 'entities');
   }
 
   // ---------------- init ----------------
   document.addEventListener('DOMContentLoaded', async function(){
     tipEl = document.getElementById('tip');
     STATE.remarkMap = loadRemarkMap();
+    STATE.entityMap = loadEntityMap();
 
     document.getElementById('connectBtn').addEventListener('click', connectOrReconnect);
     document.getElementById('connectBtn2').addEventListener('click', connectOrReconnect);
@@ -1235,6 +1437,18 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       if (await requireEditorUnlock()) resetRemarkMap();
     });
     document.getElementById('lockToggleBtn').addEventListener('click', async function(){
+      if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
+    });
+
+    document.getElementById('exportEntityBtn').addEventListener('click', exportEntityMapXlsx);
+    document.getElementById('importEntityInput').addEventListener('change', async function(e){
+      var f = e.target.files[0]; e.target.value = '';
+      if (f && (await requireEditorUnlock())) importEntityMapXlsx(f);
+    });
+    document.getElementById('resetEntityBtn').addEventListener('click', async function(){
+      if (await requireEditorUnlock()) resetEntityMap();
+    });
+    document.getElementById('lockToggleBtn2').addEventListener('click', async function(){
       if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
     });
 
