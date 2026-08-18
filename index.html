@@ -126,11 +126,8 @@
   .kpi-tile-clickable { cursor: pointer; transition: transform .08s ease, box-shadow .08s ease; }
   .kpi-tile-clickable:hover, .kpi-tile-clickable:focus-visible { box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--kpi-color) 35%, transparent); transform: translateY(-1px); }
 
-  .kpi-tree { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 3px; }
-  .kpi-tree-row { display: flex; align-items: baseline; gap: 5px; font-size: 11px; color: var(--ink-soft); white-space: nowrap; }
-  .kpi-tree-row .branch { color: var(--muted); font-family: var(--font-mono); flex: none; }
-  .kpi-tree-row .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-  .kpi-tree-row b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi-section-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin: 18px 0 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .kpi-row-entity { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
 
   .preview-overlay { position: fixed; inset: 0; background: rgba(11,11,11,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 24px; }
   .preview-overlay[hidden] { display: none; }
@@ -266,6 +263,9 @@
 
         <div class="kpi-row" id="kpiRow"></div>
 
+        <div class="kpi-section-label">Client / Sister Company &mdash; On Memo, Hold, Sold, Other</div>
+        <div class="kpi-row-entity" id="entityKpiRow"></div>
+
         <div class="dist-bar" id="distBar"></div>
         <div class="legend-row" id="distLegend"></div>
       </div>
@@ -313,9 +313,9 @@
             <button class="btn ghost" id="resetEntityBtn">Reset to defaults</button>
           </div>
         </div>
-        <div class="panel-sub">Classify each raw remark (party) found in your INWARD files as belonging to a <b>Client</b> or to your <b>Sister Company</b>. This drives the Client / Sister Company breakdown shown under On Memo, Hold, Sold and Other on the Dashboard. Everyone can view this table; editing it needs the password. New remarks default to "Client" until you reassign them. Saved automatically in this browser; export/import to back it up, move it between computers, or publish it live.</div>
+        <div class="panel-sub">Classify each customer — from Inventory's <b>Customer</b> column (current memo/hold holder) or Sales' <b>Customer Name</b> column (buyer) — as a <b>Client</b> or your <b>Sister Company</b>. This drives the Client / Sister Company breakdown shown under On Memo, Hold, Sold and Other on the Dashboard. Everyone can view this table; editing it needs the password. New customers default to "Client" until you reassign them. Saved automatically in this browser; export/import to back it up, move it between computers, or publish it live.</div>
         <div style="overflow-x:auto;">
-        <table><thead><tr><th>Raw remark</th><th class="num">Stones</th><th>Seen in</th><th>Entity</th></tr></thead><tbody id="entityMapTable"></tbody></table>
+        <table><thead><tr><th>Customer</th><th class="num">Stones</th><th>Status</th><th>Entity</th></tr></thead><tbody id="entityMapTable"></tbody></table>
         </div>
       </div>
     </section>
@@ -438,6 +438,16 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   // pair came from — a freshly-read xlsx file, or a raw row pulled back out of a published
   // JSON snapshot. This is what lets the "shared" viewer reuse every bit of dashboard/export
   // logic that the live local-folder mode uses.
+  // Column headers occasionally carry inconsistent spacing between exports (e.g. "Customer  Name"
+  // with a double space), so customer-name lookups normalize whitespace/case instead of relying
+  // on an exact indexOf match.
+  function normColName(s){ return String(s==null?'':s).replace(/\s+/g,' ').trim().toLowerCase(); }
+  function findColIdx(header, name){
+    var target = normColName(name);
+    for (var i=0;i<header.length;i++){ if (normColName(header[i]) === target) return i; }
+    return -1;
+  }
+
   function deriveInventoryFields(header, r){
     var idx = function(n){ return header.indexOf(n); };
     var sid = r[idx('StoneID')];
@@ -446,14 +456,16 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     status = status.replace(/ /g,'_');
     if (!STATUS_META[status]) status = 'UNKNOWN';
     var aging = r[idx('StockAging')]; aging = (typeof aging === 'number') ? aging : null;
-    return { stoneId: String(sid), status: status, stockAging: aging };
+    var customer = r[findColIdx(header, 'Customer')]; customer = (typeof customer==='string' && customer.trim()) ? customer.trim() : '';
+    return { stoneId: String(sid), status: status, stockAging: aging, customer: customer };
   }
   function deriveSalesFields(header, r){
     var idx = function(n){ return header.indexOf(n); };
     var sid = r[idx('Stone ID')];
     if (sid===null||sid===undefined||sid==='') return null;
     var pd = r[idx('Purchase Date Avg')]; pd = (pd instanceof Date) ? pd : null;
-    return { stoneId: String(sid), purchaseDateAvg: pd };
+    var customer = r[findColIdx(header, 'Customer Name')]; customer = (typeof customer==='string' && customer.trim()) ? customer.trim() : '';
+    return { stoneId: String(sid), purchaseDateAvg: pd, customer: customer };
   }
   function deriveInwardFields(header, r){
     var idx = function(n){ return header.indexOf(n); };
@@ -845,6 +857,15 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     return 'UNKNOWN';
   }
 
+  // Customer for entity classification: the buyer (Sales "Customer Name") once sold, otherwise
+  // whoever Inventory's "Customer" column currently shows it against (blank while Available).
+  function customerOf(stoneId){
+    var sale = STATE.salesMap.get(stoneId);
+    if (sale) return sale.customer || '(blank)';
+    var inv = STATE.inventoryMap.get(stoneId);
+    return (inv && inv.customer) ? inv.customer : '(blank)';
+  }
+
   // Aging = days since purchase. Sold stones no longer carry StockAging in Inventory,
   // so derive it from Sales' Purchase Date Avg instead; unsold stones use Inventory's own figure as-is.
   var MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -875,7 +896,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   function saveEntityMap(){ localStorage.setItem('stockLedger.entityMap.v1', JSON.stringify(STATE.entityMap)); }
   function ensureEntityMap(){
     var m = STATE.entityMap || {};
-    var raws = {}; STATE.inwardRows.forEach(function(r){ raws[r.remark] = true; });
+    var raws = {}; STATE.inwardRows.forEach(function(r){ raws[customerOf(r.stoneId)] = true; });
     Object.keys(raws).forEach(function(raw){ if (!(raw in m)) m[raw] = ENTITY_CLIENT; });
     STATE.entityMap = m; saveEntityMap();
   }
@@ -1040,23 +1061,41 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       tile.style.setProperty('--kpi-color', meta.color);
       tile.title = 'Click to preview these stones';
       tile.tabIndex = 0; tile.setAttribute('role', 'button');
-      var treeHtml = '';
-      if (k !== 'AVAILABLE' && s.pcs > 0) {
-        var cli = s.entity[ENTITY_CLIENT], sis = s.entity[ENTITY_SISTER];
-        treeHtml = '<div class="kpi-tree">' +
-          '<div class="kpi-tree-row"><span class="branch">├</span><span class="lbl">Client</span><b>' + fmtNum(cli.pcs) + '</b></div>' +
-          '<div class="kpi-tree-row"><span class="branch">└</span><span class="lbl">Sister Company</span><b>' + fmtNum(sis.pcs) + '</b></div>' +
-          '</div>';
-      }
       tile.innerHTML =
         '<div class="kpi-name"><span class="sw"></span>' + meta.label + '</div>' +
         '<div class="kpi-value">' + fmtUSDFull(s.cost) + '</div>' +
         '<div class="kpi-foot">' + fmtNum(s.pcs) + ' pcs &middot; ' + share.toFixed(0) + '%</div>' +
-        '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>' +
-        treeHtml;
+        '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>';
       tile.addEventListener('click', function(){ openStatusPreview(k); });
       tile.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openStatusPreview(k); } });
       rowEl.appendChild(tile);
+    });
+  }
+
+  // Client / Sister Company breakdown — full-size tiles (same box as the main KPI row, not a
+  // shrunk-down sub-list) for On Memo / Hold / Sold / Other, each independently clickable to
+  // preview just that status+entity slice.
+  var ENTITY_BREAKDOWN_STATUSES = ['ON_MEMO', 'HOLD', 'SOLD', 'UNKNOWN'];
+  function buildEntityKpiRow(rowEl, byStatus){
+    rowEl.innerHTML = '';
+    ENTITY_BREAKDOWN_STATUSES.forEach(function(k){
+      var s = byStatus[k]; var meta = STATUS_META[k];
+      [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(entKey){
+        var e = s.entity[entKey];
+        var share = s.cost ? (e.cost/s.cost*100) : 0;
+        var tile = document.createElement('div'); tile.className = 'kpi-tile kpi-tile-clickable';
+        tile.style.setProperty('--kpi-color', meta.color);
+        tile.title = 'Click to preview these stones';
+        tile.tabIndex = 0; tile.setAttribute('role', 'button');
+        tile.innerHTML =
+          '<div class="kpi-name"><span class="sw"></span>' + meta.label + ' &middot; ' + entKey + '</div>' +
+          '<div class="kpi-value">' + fmtUSDFull(e.cost) + '</div>' +
+          '<div class="kpi-foot">' + fmtNum(e.pcs) + ' pcs &middot; ' + share.toFixed(0) + '% of ' + meta.label + '</div>' +
+          '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>';
+        tile.addEventListener('click', function(){ openStatusPreview(k, entKey); });
+        tile.addEventListener('keydown', function(e2){ if (e2.key === 'Enter' || e2.key === ' ') { e2.preventDefault(); openStatusPreview(k, entKey); } });
+        rowEl.appendChild(tile);
+      });
     });
   }
 
@@ -1087,7 +1126,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     return String(cell);
   }
 
-  function openStatusPreview(statusKey){
+  function openStatusPreview(statusKey, entityKey){
     if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
     var meta = STATUS_META[statusKey];
     var isSold = statusKey === 'SOLD';
@@ -1095,9 +1134,11 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     if (!header.length) { alert((isSold ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
 
     var rows = currentFilteredRows().filter(function(r){ return statusOf(r.stoneId) === statusKey; });
+    if (entityKey) rows = rows.filter(function(r){ return entityOf(customerOf(r.stoneId)) === entityKey; });
     var built = rowsForStatusExport(rows, isSold);
 
-    document.getElementById('previewTitle').textContent = meta.label + ' — ' + fmtNum(built.dataRows.length) + ' stones';
+    var titleLabel = entityKey ? (meta.label + ' · ' + entityKey) : meta.label;
+    document.getElementById('previewTitle').textContent = titleLabel + ' — ' + fmtNum(built.dataRows.length) + ' stones';
 
     var shown = built.dataRows.slice(0, PREVIEW_ROW_CAP);
     var html = '<div class="preview-table-wrap"><table class="preview-table"><thead><tr>';
@@ -1119,7 +1160,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     var exportBtn = document.getElementById('previewExportBtn');
     exportBtn.disabled = !built.dataRows.length;
     exportBtn.onclick = function(){
-      downloadAoaAsXlsx([built.header].concat(built.dataRows), meta.label, statusKey.toLowerCase().replace(/_/g,'-') + '-stones-' + todayStamp() + '.xlsx');
+      var entSlug = entityKey ? ('-' + entityKey.toLowerCase().replace(/\s+/g,'-')) : '';
+      downloadAoaAsXlsx([built.header].concat(built.dataRows), titleLabel.slice(0,31), statusKey.toLowerCase().replace(/_/g,'-') + entSlug + '-stones-' + todayStamp() + '.xlsx');
     };
 
     document.getElementById('previewOverlay').hidden = false;
@@ -1156,7 +1198,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       totalCts += r.cts; totalCost += r.cost;
       var st = statusOf(r.stoneId);
       byStatus[st].pcs++; byStatus[st].cost += r.cost;
-      var ent = entityOf(r.remark);
+      var ent = entityOf(customerOf(r.stoneId));
       byStatus[st].entity[ent].pcs++; byStatus[st].entity[ent].cost += r.cost;
       var a = agingDaysOf(r.stoneId);
       if (a !== null) { agingSum += a; agingCount++; }
@@ -1172,6 +1214,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     }
 
     buildKpiRow(document.getElementById('kpiRow'), byStatus);
+    buildEntityKpiRow(document.getElementById('entityKpiRow'), byStatus);
     buildDistBar(document.getElementById('distBar'), document.getElementById('distLegend'), byStatus);
 
     var soldCount = byStatus.SOLD.pcs;
@@ -1248,7 +1291,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
   function exportEntityMapXlsx(){
     try {
-      var rows = [['Raw Remark','Entity']];
+      var rows = [['Customer','Entity']];
       Object.keys(STATE.entityMap).sort().forEach(function(raw){ rows.push([raw, entityOf(raw)]); });
       var wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Entity Mapping');
@@ -1263,8 +1306,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         var wb = XLSX.read(reader.result, {type:'array'});
         var rows = sheetToRows(wb, wb.SheetNames[0]);
         var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
-        var rawIdx = header.indexOf('Raw Remark'), entIdx = header.indexOf('Entity');
-        if (rawIdx === -1 || entIdx === -1) { alert('That file needs "Raw Remark" and "Entity" columns — export one first to see the format.'); return; }
+        var rawIdx = header.indexOf('Customer'), entIdx = header.indexOf('Entity');
+        if (rawIdx === -1 || entIdx === -1) { alert('That file needs "Customer" and "Entity" columns — export one first to see the format.'); return; }
         var applied = 0;
         for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
           var raw = r[rawIdx]; if (raw===null||raw===undefined||raw==='') continue;
@@ -1281,8 +1324,8 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   }
 
   function resetEntityMap(){
-    if (!confirm('Reset every raw remark back to "Client"? This clears your Sister Company assignments.')) return;
-    var m = {}; STATE.inwardRows.forEach(function(r){ m[r.remark] = ENTITY_CLIENT; });
+    if (!confirm('Reset every customer back to "Client"? This clears your Sister Company assignments.')) return;
+    var m = {}; STATE.inwardRows.forEach(function(r){ m[customerOf(r.stoneId)] = ENTITY_CLIENT; });
     STATE.entityMap = m; saveEntityMap();
     renderDashboard(); renderEntityPage();
   }
@@ -1335,22 +1378,23 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   }
 
   function renderEntityPage(){
-    var counts = {}, batchesByRaw = {};
+    var counts = {}, statusesByRaw = {};
     STATE.inwardRows.forEach(function(r){
-      counts[r.remark] = (counts[r.remark]||0) + 1;
-      if (!batchesByRaw[r.remark]) batchesByRaw[r.remark] = new Set();
-      batchesByRaw[r.remark].add(r.batch);
+      var raw = customerOf(r.stoneId);
+      counts[raw] = (counts[raw]||0) + 1;
+      if (!statusesByRaw[raw]) statusesByRaw[raw] = new Set();
+      statusesByRaw[raw].add(STATUS_META[statusOf(r.stoneId)].label);
     });
     var rawList = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; });
     var tbody = document.getElementById('entityMapTable'); tbody.innerHTML = '';
-    if (!rawList.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Connect a folder to see remarks here.</td></tr>'; }
+    if (!rawList.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Connect a folder to see customers here.</td></tr>'; }
     var unlocked = isEditorUnlocked();
     rawList.forEach(function(raw){
       var tr = document.createElement('tr');
       var tdRaw = document.createElement('td'); tdRaw.textContent = raw;
       var tdCount = document.createElement('td'); tdCount.className = 'num'; tdCount.textContent = fmtNum(counts[raw]);
       var tdBatches = document.createElement('td');
-      Array.from(batchesByRaw[raw]).sort().forEach(function(b){ var sp = document.createElement('span'); sp.className='badge'; sp.textContent=b; tdBatches.appendChild(sp); });
+      Array.from(statusesByRaw[raw]).sort().forEach(function(b){ var sp = document.createElement('span'); sp.className='badge'; sp.textContent=b; tdBatches.appendChild(sp); });
       var tdEnt = document.createElement('td');
       var select = document.createElement('select'); select.className = 'entity-select' + (unlocked ? '' : ' locked');
       [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(opt){
