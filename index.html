@@ -677,7 +677,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
           var writable = await fileHandle.createWritable();
           await writable.write(json);
           await writable.close();
-          alert('Published! Anyone with the link will see this within a few seconds.');
+          alert('data.json was updated in your repo folder.\n\nIf you\'ve run install-auto-publish.bat, it should push this live within a few seconds — check auto-publish.log in that folder to confirm.\n\nIf you haven\'t set that up (or it doesn\'t push), double-click publish.bat now to push it live yourself — writing the file here does NOT reach GitHub on its own.');
           return;
         } catch(e) {
           if (e.name === 'AbortError') return; // user cancelled the folder picker
