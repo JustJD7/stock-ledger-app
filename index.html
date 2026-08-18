@@ -127,7 +127,17 @@
   .kpi-tile-clickable:hover, .kpi-tile-clickable:focus-visible { box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--kpi-color) 35%, transparent); transform: translateY(-1px); }
 
   .kpi-section-label { font-size: 12.5px; color: var(--muted); font-weight: 600; margin: 18px 0 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-  .kpi-row-entity { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+
+  .entity-row-label { font-size: 11.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin: 14px 0 8px; }
+  .entity-row-label:first-child { margin-top: 0; }
+  .entity-row-line { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; margin-bottom: 18px; }
+  .entity-row-boxes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; flex: 1 1 420px; }
+  .entity-row-exports { display: flex; flex-direction: column; gap: 8px; justify-content: center; flex: 0 0 190px; }
+  .entity-row-exports .btn { width: 100%; justify-content: center; }
+  @media (max-width: 720px) {
+    .entity-row-boxes { grid-template-columns: repeat(2, 1fr); }
+    .entity-row-exports { flex-direction: row; flex-basis: 100%; }
+  }
 
   .preview-overlay { position: fixed; inset: 0; background: rgba(11,11,11,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 24px; }
   .preview-overlay[hidden] { display: none; }
@@ -261,8 +271,8 @@
 
         <div class="kpi-row" id="kpiRow"></div>
 
-        <div class="kpi-section-label">Client / Sister Company &mdash; On Memo, Hold, Sold, Other</div>
-        <div class="kpi-row-entity" id="entityKpiRow"></div>
+        <div class="kpi-section-label">Client / Sister Company &mdash; On Memo, Hold, Sold</div>
+        <div id="entityKpiRow"></div>
 
         <div class="dist-bar" id="distBar"></div>
         <div class="legend-row" id="distLegend"></div>
@@ -1060,15 +1070,21 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     });
   }
 
-  // Client / Sister Company breakdown — full-size tiles (same box as the main KPI row, not a
-  // shrunk-down sub-list) for On Memo / Hold / Sold / Other, each independently clickable to
-  // preview just that status+entity slice.
-  var ENTITY_BREAKDOWN_STATUSES = ['ON_MEMO', 'HOLD', 'SOLD', 'UNKNOWN'];
+  // Client / Sister Company breakdown — one horizontal line per entity, three full-size tiles
+  // (On Memo / Hold / Sold — "Other" is the least meaningful bucket so it's left out here) each
+  // independently clickable to preview that status+entity slice, followed by two export buttons
+  // scoped to that entity's sold / remaining stones across every status.
+  var ENTITY_ROW_STATUSES = ['ON_MEMO', 'HOLD', 'SOLD'];
   function buildEntityKpiRow(rowEl, byStatus){
     rowEl.innerHTML = '';
-    ENTITY_BREAKDOWN_STATUSES.forEach(function(k){
-      var s = byStatus[k]; var meta = STATUS_META[k];
-      [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(entKey){
+    [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(entKey){
+      var label = document.createElement('div'); label.className = 'entity-row-label'; label.textContent = entKey;
+      rowEl.appendChild(label);
+
+      var line = document.createElement('div'); line.className = 'entity-row-line';
+      var boxes = document.createElement('div'); boxes.className = 'entity-row-boxes';
+      ENTITY_ROW_STATUSES.forEach(function(k){
+        var s = byStatus[k]; var meta = STATUS_META[k];
         var e = s.entity[entKey];
         var share = s.cost ? (e.cost/s.cost*100) : 0;
         var tile = document.createElement('div'); tile.className = 'kpi-tile kpi-tile-clickable';
@@ -1076,14 +1092,27 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         tile.title = 'Click to preview these stones';
         tile.tabIndex = 0; tile.setAttribute('role', 'button');
         tile.innerHTML =
-          '<div class="kpi-name"><span class="sw"></span>' + meta.label + ' &middot; ' + entKey + '</div>' +
+          '<div class="kpi-name"><span class="sw"></span>' + meta.label + '</div>' +
           '<div class="kpi-value">' + fmtUSDFull(e.cost) + '</div>' +
           '<div class="kpi-foot">' + fmtNum(e.pcs) + ' pcs &middot; ' + share.toFixed(0) + '% of ' + meta.label + '</div>' +
           '<div class="kpi-share-track"><div class="kpi-share-fill" style="width:' + share.toFixed(1) + '%"></div></div>';
         tile.addEventListener('click', function(){ openStatusPreview(k, entKey); });
         tile.addEventListener('keydown', function(e2){ if (e2.key === 'Enter' || e2.key === ' ') { e2.preventDefault(); openStatusPreview(k, entKey); } });
-        rowEl.appendChild(tile);
+        boxes.appendChild(tile);
       });
+      line.appendChild(boxes);
+
+      var exportsCol = document.createElement('div'); exportsCol.className = 'entity-row-exports';
+      var soldBtn = document.createElement('button'); soldBtn.type = 'button'; soldBtn.className = 'btn primary';
+      soldBtn.textContent = 'Export sold stones';
+      soldBtn.addEventListener('click', function(){ doExport('sold', entKey); });
+      var remBtn = document.createElement('button'); remBtn.type = 'button'; remBtn.className = 'btn primary';
+      remBtn.textContent = 'Export remaining stones';
+      remBtn.addEventListener('click', function(){ doExport('remaining', entKey); });
+      exportsCol.appendChild(soldBtn); exportsCol.appendChild(remBtn);
+      line.appendChild(exportsCol);
+
+      rowEl.appendChild(line);
     });
   }
 
@@ -1219,18 +1248,22 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   function todayStamp(){ var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '_' + String(d.getHours()).padStart(2,'0') + String(d.getMinutes()).padStart(2,'0'); }
   function downloadBlob(blob, filename){ var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){ URL.revokeObjectURL(a.href); }, 4000); }
 
-  function doExport(kind){
+  function doExport(kind, entityKey){
     try {
       if (!STATE.inwardHeader.length) { alert('Connect and sync a folder first.'); return; }
       var isSold = kind === 'sold';
       var rows = currentFilteredRows().filter(function(r){ var sold = statusOf(r.stoneId) === 'SOLD'; return isSold ? sold : !sold; });
-      if (!rows.length) { alert('No ' + (isSold ? 'sold' : 'remaining') + ' stones in the current selection.'); return; }
+      if (entityKey) rows = rows.filter(function(r){ return entityOf(customerOf(r.stoneId)) === entityKey; });
+      var label = (isSold ? 'sold' : 'remaining') + (entityKey ? (' ' + entityKey) : '');
+      if (!rows.length) { alert('No ' + label + ' stones in the current selection.'); return; }
       if (!(isSold ? STATE.salesHeader : STATE.inventoryHeader).length) { alert((isSold ? 'SALES' : 'INVENTORY') + ' file columns are not available yet — sync first.'); return; }
 
       var built = rowsForStatusExport(rows, isSold);
       if (!built.dataRows.length) { alert('None of the matching stones were found in ' + (isSold ? 'SALES' : 'INVENTORY') + ' — nothing to export.'); return; }
 
-      downloadAoaAsXlsx([built.header].concat(built.dataRows), isSold ? 'Sold' : 'Remaining', (isSold ? 'sold-stones-' : 'remaining-stones-') + todayStamp() + '.xlsx');
+      var sheetName = (isSold ? 'Sold' : 'Remaining') + (entityKey ? (' - ' + entityKey) : '');
+      var fnameEntity = entityKey ? ('-' + entityKey.toLowerCase().replace(/\s+/g,'-')) : '';
+      downloadAoaAsXlsx([built.header].concat(built.dataRows), sheetName.slice(0,31), (isSold ? 'sold-stones' : 'remaining-stones') + fnameEntity + '-' + todayStamp() + '.xlsx');
 
       if (built.skipped) alert('Exported ' + built.dataRows.length + ' stones. ' + built.skipped + ' stone' + (built.skipped===1?'':'s') + ' could not be matched in ' + (isSold ? 'SALES' : 'INVENTORY') + ' and ' + (built.skipped===1?'was':'were') + ' skipped.');
     } catch(e) { alert('Export failed: ' + e.message); console.error(e); }
