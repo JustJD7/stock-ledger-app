@@ -207,10 +207,8 @@
   <div class="syncbar">
     <div class="syncbar-status"><span class="live-dot" id="liveDot"></span><span id="syncText">Not connected</span></div>
     <div class="syncbar-actions">
-      <button class="btn primary" id="connectBtn">Connect data folder</button>
-      <button class="btn ghost" id="syncNowBtn" hidden>Sync now</button>
-      <button class="btn ghost" id="publishBtn" hidden title="Writes data.json straight into your repo folder and pushes it live automatically">Publish live data</button>
-      <button class="btn ghost" id="disconnectBtn" hidden>Disconnect</button>
+      <button class="btn primary" id="refreshBtn" title="Pick your data folder (first time) or pull the latest files from it">Refresh data</button>
+      <button class="btn ghost" id="publishBtn" hidden title="Publishes your latest refreshed data so anyone with the link can see it">Publish</button>
     </div>
   </div>
 
@@ -565,10 +563,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       isSharedMode = false;
       document.getElementById('sharedBanner').hidden = true;
       showApp();
-      document.getElementById('connectBtn').hidden = true;
-      document.getElementById('syncNowBtn').hidden = false;
       document.getElementById('publishBtn').hidden = false;
-      document.getElementById('disconnectBtn').hidden = false;
       await pollTick();
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(pollTick, 1000);
@@ -617,10 +612,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
       isSharedMode = true;
       showApp();
-      document.getElementById('connectBtn').hidden = false;
-      document.getElementById('syncNowBtn').hidden = true;
       document.getElementById('publishBtn').hidden = true;
-      document.getElementById('disconnectBtn').hidden = true;
       setSyncText('Viewing shared data'); setLiveDot('ok');
       var when = snap.generatedAt ? new Date(snap.generatedAt).toLocaleString() : 'unknown time';
       document.getElementById('sharedBanner').hidden = false;
@@ -634,27 +626,31 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   // A background watcher (install-auto-publish.bat) sits on this PC watching the repo folder's
   // data.json for changes and auto git-add/commit/pushes it. So publishing here only has to write
   // the file straight into that folder — no more download-then-move-then-run-a-bat-file dance.
-  var repoHandle = null;
-  async function ensureRepoHandle(forceReprompt){
-    if (!forceReprompt) {
-      if (repoHandle) return repoHandle;
-      var stored;
-      try { stored = await idbGet('repoHandle'); } catch(e) { stored = null; }
-      if (stored) {
-        try {
-          await stored.getFileHandle('index.html');
-          var perm = await stored.queryPermission({ mode: 'readwrite' });
-          if (perm !== 'granted') perm = await stored.requestPermission({ mode: 'readwrite' });
-          if (perm === 'granted') { repoHandle = stored; return repoHandle; }
-        } catch(e) { /* stale or wrong folder — fall through and re-prompt */ }
+  //
+  // showDirectoryPicker()/requestPermission() only work as the direct, unawaited result of a user
+  // gesture — awaiting anything first (even something as innocuous as an IndexedDB read) makes
+  // Chrome drop the click and throw "Must be handling a user gesture". So the stored-handle lookup
+  // (IndexedDB + queryPermission, neither of which needs a gesture) runs eagerly in the background
+  // via preloadRepoHandle() — never inside the Publish click handler — leaving that handler free to
+  // call the one gesture-requiring API it actually needs as its very first await, if any.
+  var repoHandle = null;        // known handle with permission already granted
+  var repoHandlePending = null; // known handle whose permission needs re-granting
+  var repoHandleChecked = false;
+
+  async function preloadRepoHandle(){
+    if (repoHandleChecked || !window.showDirectoryPicker) return;
+    repoHandleChecked = true;
+    try {
+      var stored = await idbGet('repoHandle');
+      if (!stored) return;
+      var perm = await stored.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        await stored.getFileHandle('index.html'); // sanity check it's still the right folder
+        repoHandle = stored;
+      } else {
+        repoHandlePending = stored;
       }
-    }
-    alert('One-time setup: pick your stock-ledger-app folder (the one with index.html and publish.bat in it) so future publishes can write straight into it.');
-    var handle = await window.showDirectoryPicker({ id: 'stock-ledger-repo', mode: 'readwrite' });
-    await handle.getFileHandle('index.html'); // throws if this isn't the repo folder
-    await idbSet('repoHandle', handle);
-    repoHandle = handle;
-    return repoHandle;
+    } catch(e) { /* stale or invalid handle — Publish will just prompt fresh */ }
   }
 
   async function publishSnapshot(){
@@ -676,19 +672,31 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
       if (window.showDirectoryPicker) {
         try {
-          var handle = await ensureRepoHandle(false);
+          var handle;
+          if (repoHandle) {
+            handle = repoHandle;
+          } else if (repoHandlePending) {
+            var perm = await repoHandlePending.requestPermission({ mode: 'readwrite' });
+            if (perm !== 'granted') throw new Error('Permission to write to the repo folder was not granted.');
+            handle = repoHandlePending; repoHandle = handle; repoHandlePending = null;
+          } else {
+            handle = await window.showDirectoryPicker({ id: 'stock-ledger-repo', mode: 'readwrite' });
+            await handle.getFileHandle('index.html'); // throws if this isn't the repo folder
+            await idbSet('repoHandle', handle);
+            repoHandle = handle;
+          }
           var fileHandle = await handle.getFileHandle('data.json', { create: true });
           var writable = await fileHandle.createWritable();
           await writable.write(json);
           await writable.close();
-          alert('Published! data.json was updated in your repo folder — the auto-publish watcher will push it live within a few seconds. (Run install-auto-publish.bat once if you haven\'t already set that up.)');
+          alert('Published! Anyone with the link will see this within a few seconds.');
           return;
         } catch(e) {
           if (e.name === 'AbortError') return; // user cancelled the folder picker
           console.error(e);
           alert('Could not write directly into your repo folder (' + e.message + '). Falling back to the manual download — pick the folder again next time you publish.');
           try { await idbDel('repoHandle'); } catch(e2) {}
-          repoHandle = null;
+          repoHandle = null; repoHandlePending = null;
         }
       }
 
@@ -720,26 +728,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     document.getElementById('connectPanel').querySelector('h2').textContent = 'Reconnect your STOCK DETAILS folder';
     document.getElementById('connectPanel').querySelector('p').innerHTML = 'Browser permission resets each session — click to re-grant access to the same folder you picked before.';
     document.getElementById('connectBtn2').textContent = 'Reconnect';
-  }
-
-  async function disconnect(){
-    if (pollTimer) clearInterval(pollTimer);
-    await idbDel('rootHandle');
-    rootHandle = invDirHandle = inwDirHandle = salesDirHandle = null;
-    knownFiles = {};
-    document.getElementById('connectBtn').hidden = false;
-    document.getElementById('syncNowBtn').hidden = true;
-    document.getElementById('publishBtn').hidden = true;
-    document.getElementById('disconnectBtn').hidden = true;
-    setSyncText('Not connected'); setLiveDot('');
-    showWarnings([]); document.getElementById('sharedBanner').hidden = true;
-    isSharedMode = false;
-    // Deliberately does NOT fall back to the shared snapshot — disconnecting is an explicit
-    // choice on this machine's own data, and shared mode would overwrite local state (like
-    // the remark mapping) with whatever's published. Use "Connect data folder" to go back.
-    showConnectPanel();
-    document.getElementById('connectPanel').querySelector('h2').textContent = 'Connect your STOCK DETAILS folder';
-    document.getElementById('connectBtn2').textContent = 'Choose folder…';
   }
 
   // ---------------- polling ----------------
@@ -1441,12 +1429,11 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     STATE.remarkMap = loadRemarkMap();
     STATE.entityMap = loadEntityMap();
 
-    document.getElementById('connectBtn').addEventListener('click', connectOrReconnect);
+    document.getElementById('refreshBtn').addEventListener('click', connectOrReconnect);
     document.getElementById('connectBtn2').addEventListener('click', connectOrReconnect);
-    document.getElementById('syncNowBtn').addEventListener('click', pollTick);
     document.getElementById('publishBtn').addEventListener('click', publishSnapshot);
-    document.getElementById('disconnectBtn').addEventListener('click', disconnect);
     document.getElementById('sharedBannerConnectBtn').addEventListener('click', connectOrReconnect);
+    preloadRepoHandle();
     document.getElementById('sharedBannerRefreshBtn').addEventListener('click', function(){ loadSharedSnapshot(true); });
 
     document.querySelectorAll('.page-nav button').forEach(function(b){ b.addEventListener('click', function(){ switchPage(b.getAttribute('data-page')); }); });
