@@ -181,12 +181,6 @@
   .remark-input { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; width: 100%; max-width: 240px; }
   .remark-input[readonly] { background: var(--surface-2); color: var(--ink-soft); cursor: pointer; }
   .remark-input.dirty-flash { border-color: var(--st-available); }
-  .entity-select { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; width: 100%; max-width: 200px; }
-  .entity-select.locked { background: var(--surface-2); color: var(--ink-soft); cursor: pointer; }
-  .entity-select.dirty-flash { border-color: var(--st-available); }
-  .entity-badge { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 100px; }
-  .entity-badge.client { background: var(--accent-soft); color: var(--accent); }
-  .entity-badge.sister { background: color-mix(in srgb, var(--st-sold) 18%, transparent); color: var(--st-sold); }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
 
   footer { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; line-height: 1.7; }
@@ -210,7 +204,6 @@
     <nav class="page-nav">
       <button data-page="dashboard" class="active">Dashboard</button>
       <button data-page="remarks">Remark Mapping</button>
-      <button data-page="entities">Entity Mapping</button>
     </nav>
   </div>
 
@@ -309,25 +302,6 @@
       </div>
     </section>
 
-    <!-- ===================== ENTITY MAPPING ===================== -->
-    <section class="page" id="page-entities" hidden>
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">Client / Sister Company mapping</h2>
-          <div class="toolbar">
-            <button class="btn ghost" id="lockToggleBtn2">🔒 Locked — click to unlock</button>
-            <button class="btn" id="exportEntityBtn">Export mapping (.xlsx)</button>
-            <label class="btn" style="cursor:pointer;margin:0;">Import mapping (.xlsx)<input type="file" id="importEntityInput" accept=".xlsx" style="display:none;"></label>
-            <button class="btn ghost" id="resetEntityBtn">Reset to defaults</button>
-          </div>
-        </div>
-        <div class="panel-sub">Classify each customer — from Inventory's <b>Customer</b> column (current memo/hold holder) or Sales' <b>Customer Name</b> column (buyer) — as a <b>Client</b> or your <b>Sister Company</b>. This drives the Client / Sister Company breakdown shown under On Memo, Hold, Sold and Other on the Dashboard. Everyone can view this table; editing it needs the password. New customers default to "Client" until you reassign them. Saved automatically in this browser; export/import to back it up, move it between computers, or publish it live.</div>
-        <div style="overflow-x:auto;">
-        <table><thead><tr><th>Customer</th><th class="num">Stones</th><th>Status</th><th>Entity</th></tr></thead><tbody id="entityMapTable"></tbody></table>
-        </div>
-      </div>
-    </section>
-
     <footer>
       Reads <code>INVENTORY/*.xlsx</code>, <code>SALES/*.xlsx</code> and <code>INWARD/*.xlsx</code> directly from disk and checks every second for edits — only re-parses and redraws when a file actually changes. "Remaining" means not yet sold (available, on memo, hold, or other). Nothing leaves your machine; all parsing happens in this browser tab.
     </footer>
@@ -391,9 +365,16 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   var STATE = {
     inventoryRows: [], salesRows: [], inwardRows: [],
     inwardHeader: [], inventoryHeader: [], salesHeader: [],
-    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}, entityMap: {}, batchDates: {}
+    inventoryMap: new Map(), salesMap: new Map(), remarkMap: {}, batchDates: {}
   };
   var ENTITY_CLIENT = 'Client', ENTITY_SISTER = 'Sister Company';
+  // Fixed list — these customer names (from Inventory's Customer column or Sales' Customer Name
+  // column) are always Sister Company; everyone else is a Client. No per-install mapping to
+  // maintain or publish, so every viewer sees the same classification immediately.
+  var SISTER_COMPANY_NAMES = [
+    'Asp HK', 'KGS JEWELS INC', 'Asp Belg', 'K Girdharlal Dmcc', 'Asp FZCO',
+    'K G Int', 'Asp Ny', 'K Girdharlal Int Pvt Ltd(SEZ Unit)', 'Asia Pacific (HK) Limited'
+  ];
   var selBatches = new Set();   // empty = "all"
   var selMasters = new Set();   // empty = "all"
   var agingMin = null, agingMax = null; // null = unbounded
@@ -617,8 +598,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       // not whatever got cached here from an earlier visit.
       if (snap.remarkMap) { STATE.remarkMap = snap.remarkMap; saveRemarkMap(); }
       ensureRemarkMap();
-      if (snap.entityMap) { STATE.entityMap = snap.entityMap; saveEntityMap(); }
-      ensureEntityMap();
 
       isSharedMode = true;
       showApp();
@@ -628,7 +607,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       document.getElementById('sharedBanner').hidden = false;
       document.getElementById('sharedBannerText').textContent = 'Showing shared data published ' + when + '.';
 
-      renderShipmentFilterOptions(); renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage(); renderEntityPage();
+      renderShipmentFilterOptions(); renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage();
       return true;
     } catch(e) { if (showAlertIfMissing) alert('Could not load shared data: ' + e.message); return false; }
   }
@@ -675,8 +654,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         inwardHeader: STATE.inwardHeader,
         inwardRows: STATE.inwardRows.map(function(r){ return { batch: r.batch, raw: projectRow(STATE.inwardHeader, r).map(serializeValue) }; }),
         batchDates: STATE.batchDates,
-        remarkMap: STATE.remarkMap,
-        entityMap: STATE.entityMap
+        remarkMap: STATE.remarkMap
       };
       var json = JSON.stringify(snapshot);
 
@@ -781,7 +759,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
         renderRemarkFilterOptions();
         renderDashboard();
         renderRemarksPage();
-        renderEntityPage();
       } else {
         setSyncText('Watching for changes — last synced ' + new Date().toLocaleTimeString());
       }
@@ -844,7 +821,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     STATE.inventoryMap = new Map(inventoryRows.map(function(r){ return [r.stoneId, r]; }));
     STATE.salesMap = new Map(salesRows.map(function(r){ return [r.stoneId, r]; }));
     ensureRemarkMap();
-    ensureEntityMap();
     return warnings;
   }
 
@@ -889,16 +865,10 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   }
   function masterOf(raw){ return STATE.remarkMap[raw] || raw; }
 
-  // ---------------- entity (client / sister company) mapping ----------------
-  function loadEntityMap(){ try { return JSON.parse(localStorage.getItem('stockLedger.entityMap.v1')) || {}; } catch(e){ return {}; } }
-  function saveEntityMap(){ localStorage.setItem('stockLedger.entityMap.v1', JSON.stringify(STATE.entityMap)); }
-  function ensureEntityMap(){
-    var m = STATE.entityMap || {};
-    var raws = {}; STATE.inwardRows.forEach(function(r){ raws[customerOf(r.stoneId)] = true; });
-    Object.keys(raws).forEach(function(raw){ if (!(raw in m)) m[raw] = ENTITY_CLIENT; });
-    STATE.entityMap = m; saveEntityMap();
-  }
-  function entityOf(raw){ return STATE.entityMap[raw] === ENTITY_SISTER ? ENTITY_SISTER : ENTITY_CLIENT; }
+  // ---------------- entity (client / sister company) classification ----------------
+  var SISTER_COMPANY_SET = {};
+  SISTER_COMPANY_NAMES.forEach(function(n){ SISTER_COMPANY_SET[normColName(n)] = true; });
+  function entityOf(raw){ return SISTER_COMPANY_SET[normColName(raw)] ? ENTITY_SISTER : ENTITY_CLIENT; }
 
   // ---------------- editor password gate ----------------
   // This is a static site with no server, so this is a soft deterrent against casual/accidental
@@ -909,7 +879,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
   var EDITOR_HASH = 'b54c9e1d229a781799aae3bbc88f4ff4812b7cc1cbaffaa91fbdbde996318aa1'; // password: "ASPECO123"
   var UNLOCK_KEY = 'stockLedger.editorUnlocked';
   function isEditorUnlocked(){ return localStorage.getItem(UNLOCK_KEY) === '1'; }
-  function lockEditor(){ localStorage.removeItem(UNLOCK_KEY); renderRemarksPage(); renderEntityPage(); }
+  function lockEditor(){ localStorage.removeItem(UNLOCK_KEY); renderRemarksPage(); }
   async function sha256Hex(text){
     var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
@@ -919,7 +889,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     var pw = prompt('Enter the password to edit the remark mapping:');
     if (pw === null) return false;
     var hash = await sha256Hex(pw);
-    if (hash === EDITOR_HASH) { localStorage.setItem(UNLOCK_KEY, '1'); renderRemarksPage(); renderEntityPage(); return true; }
+    if (hash === EDITOR_HASH) { localStorage.setItem(UNLOCK_KEY, '1'); renderRemarksPage(); return true; }
     alert('Wrong password.');
     return false;
   }
@@ -1310,47 +1280,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     renderRemarkFilterOptions(); renderDashboard(); renderRemarksPage();
   }
 
-  function exportEntityMapXlsx(){
-    try {
-      var rows = [['Customer','Entity']];
-      Object.keys(STATE.entityMap).sort().forEach(function(raw){ rows.push([raw, entityOf(raw)]); });
-      var wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Entity Mapping');
-      XLSX.writeFile(wb, 'entity-mapping-' + todayStamp() + '.xlsx');
-    } catch(e) { alert('Export failed: ' + e.message); console.error(e); }
-  }
-
-  function importEntityMapXlsx(file){
-    var reader = new FileReader();
-    reader.onload = function(){
-      try {
-        var wb = XLSX.read(reader.result, {type:'array'});
-        var rows = sheetToRows(wb, wb.SheetNames[0]);
-        var hIdx = findHeaderRowIdx(rows); var header = normHeader(rows[hIdx]);
-        var rawIdx = header.indexOf('Customer'), entIdx = header.indexOf('Entity');
-        if (rawIdx === -1 || entIdx === -1) { alert('That file needs "Customer" and "Entity" columns — export one first to see the format.'); return; }
-        var applied = 0;
-        for (var i=hIdx+1;i<rows.length;i++){ var r = rows[i]; if (!r) continue;
-          var raw = r[rawIdx]; if (raw===null||raw===undefined||raw==='') continue;
-          var val = r[entIdx]; val = (val===null||val===undefined) ? '' : String(val).trim().toLowerCase();
-          STATE.entityMap[String(raw)] = (val.indexOf('sister') === 0) ? ENTITY_SISTER : ENTITY_CLIENT;
-          applied++;
-        }
-        ensureEntityMap(); saveEntityMap();
-        renderDashboard(); renderEntityPage();
-        alert('Applied ' + applied + ' entity mapping' + (applied===1?'':'s') + '.');
-      } catch(e) { alert('Could not read that file: ' + e.message); }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  function resetEntityMap(){
-    if (!confirm('Reset every customer back to "Client"? This clears your Sister Company assignments.')) return;
-    var m = {}; STATE.inwardRows.forEach(function(r){ m[customerOf(r.stoneId)] = ENTITY_CLIENT; });
-    STATE.entityMap = m; saveEntityMap();
-    renderDashboard(); renderEntityPage();
-  }
-
   // ---------------- remark mapping page ----------------
   function renderRemarksPage(){
     var counts = {}, batchesByRaw = {};
@@ -1398,69 +1327,17 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     if (lockBtn) lockBtn.textContent = isEditorUnlocked() ? '🔓 Editing unlocked — click to lock' : '🔒 Locked — click to unlock';
   }
 
-  function renderEntityPage(){
-    var counts = {}, statusesByRaw = {};
-    STATE.inwardRows.forEach(function(r){
-      var raw = customerOf(r.stoneId);
-      counts[raw] = (counts[raw]||0) + 1;
-      if (!statusesByRaw[raw]) statusesByRaw[raw] = new Set();
-      statusesByRaw[raw].add(STATUS_META[statusOf(r.stoneId)].label);
-    });
-    var rawList = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; });
-    var tbody = document.getElementById('entityMapTable'); tbody.innerHTML = '';
-    if (!rawList.length) { tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">Connect a folder to see customers here.</td></tr>'; }
-    var unlocked = isEditorUnlocked();
-    rawList.forEach(function(raw){
-      var tr = document.createElement('tr');
-      var tdRaw = document.createElement('td'); tdRaw.textContent = raw;
-      var tdCount = document.createElement('td'); tdCount.className = 'num'; tdCount.textContent = fmtNum(counts[raw]);
-      var tdBatches = document.createElement('td');
-      Array.from(statusesByRaw[raw]).sort().forEach(function(b){ var sp = document.createElement('span'); sp.className='badge'; sp.textContent=b; tdBatches.appendChild(sp); });
-      var tdEnt = document.createElement('td');
-      var select = document.createElement('select'); select.className = 'entity-select' + (unlocked ? '' : ' locked');
-      [ENTITY_CLIENT, ENTITY_SISTER].forEach(function(opt){
-        var o = document.createElement('option'); o.value = opt; o.textContent = opt; select.appendChild(o);
-      });
-      select.value = entityOf(raw);
-      if (!unlocked) select.title = 'Click to enter the edit password';
-      select.addEventListener('mousedown', function(e){
-        if (isEditorUnlocked()) return;
-        e.preventDefault(); select.blur(); requireEditorUnlock();
-      });
-      select.addEventListener('keydown', function(e){
-        if (isEditorUnlocked()) return;
-        e.preventDefault(); requireEditorUnlock();
-      });
-      select.addEventListener('change', function(){
-        if (!isEditorUnlocked()) { select.value = entityOf(raw); return; }
-        STATE.entityMap[raw] = select.value === ENTITY_SISTER ? ENTITY_SISTER : ENTITY_CLIENT;
-        saveEntityMap();
-        select.classList.add('dirty-flash');
-        setTimeout(function(){ select.classList.remove('dirty-flash'); }, 700);
-        renderDashboard();
-      });
-      tdEnt.appendChild(select);
-      tr.appendChild(tdRaw); tr.appendChild(tdCount); tr.appendChild(tdBatches); tr.appendChild(tdEnt);
-      tbody.appendChild(tr);
-    });
-
-    var lockBtn2 = document.getElementById('lockToggleBtn2');
-    if (lockBtn2) lockBtn2.textContent = isEditorUnlocked() ? '🔓 Editing unlocked — click to lock' : '🔒 Locked — click to unlock';
-  }
-
   // ---------------- page nav ----------------
   function switchPage(page){
     document.querySelectorAll('.page-nav button').forEach(function(b){ b.classList.toggle('active', b.getAttribute('data-page') === page); });
     document.getElementById('page-dashboard').hidden = (page !== 'dashboard');
     document.getElementById('page-remarks').hidden = (page !== 'remarks');
-    document.getElementById('page-entities').hidden = (page !== 'entities');
   }
 
   // ---------------- init ----------------
   document.addEventListener('DOMContentLoaded', async function(){
     tipEl = document.getElementById('tip');
     STATE.remarkMap = loadRemarkMap();
-    STATE.entityMap = loadEntityMap();
 
     document.getElementById('refreshBtn').addEventListener('click', connectOrReconnect);
     document.getElementById('connectBtn2').addEventListener('click', connectOrReconnect);
@@ -1501,18 +1378,6 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       if (await requireEditorUnlock()) resetRemarkMap();
     });
     document.getElementById('lockToggleBtn').addEventListener('click', async function(){
-      if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
-    });
-
-    document.getElementById('exportEntityBtn').addEventListener('click', exportEntityMapXlsx);
-    document.getElementById('importEntityInput').addEventListener('change', async function(e){
-      var f = e.target.files[0]; e.target.value = '';
-      if (f && (await requireEditorUnlock())) importEntityMapXlsx(f);
-    });
-    document.getElementById('resetEntityBtn').addEventListener('click', async function(){
-      if (await requireEditorUnlock()) resetEntityMap();
-    });
-    document.getElementById('lockToggleBtn2').addEventListener('click', async function(){
       if (isEditorUnlocked()) lockEditor(); else await requireEditorUnlock();
     });
 
